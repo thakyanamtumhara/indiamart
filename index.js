@@ -205,7 +205,7 @@ async function autoReplyToLead(lead) {
     return;
   }
 
-  const msg = `📦 *IndiaMART Lead*\n\nHi ${buyerName}! Thanks for your enquiry about *${match.name}*.\n\nHere's our catalog with pricing & details:\n${match.url}\n\nFeel free to ask any questions!`;
+  const msg = `Hey ${buyerName} _(indiamart)_ 👋\n\nAapne *${match.name}* ke baare mein pucha tha — yeh raha humara catalog jisme pricing aur sab details hain:\n${match.url}\n\nKoi bhi sawaal ho toh baat karte hain!`;
 
   await sendWhatsApp(phone, msg);
 }
