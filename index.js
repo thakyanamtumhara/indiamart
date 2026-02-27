@@ -36,6 +36,20 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+
+  // Add columns for additional IndiaMART fields (safe to run repeatedly)
+  const newColumns = [
+    "sender_mobile_alt VARCHAR(50)",
+    "sender_email_alt VARCHAR(255)",
+    "sender_pincode VARCHAR(20)",
+    "query_mcat_name VARCHAR(500)",
+    "receiver_mobile VARCHAR(50)",
+    "receiver_catalog VARCHAR(255)",
+  ];
+  for (const col of newColumns) {
+    await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
+  }
+
   console.log("Database initialized");
 }
 
@@ -48,8 +62,11 @@ async function insertLeads(leads) {
         unique_query_id, query_type, query_time, sender_name,
         sender_mobile, sender_email, sender_company, sender_address,
         sender_city, sender_state, sender_country_iso,
-        query_product_name, query_message, call_duration, raw_data
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        query_product_name, query_message, call_duration,
+        sender_mobile_alt, sender_email_alt, sender_pincode,
+        query_mcat_name, receiver_mobile, receiver_catalog,
+        raw_data
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       ON CONFLICT (unique_query_id) DO NOTHING
       RETURNING id`,
       [
@@ -67,6 +84,12 @@ async function insertLeads(leads) {
         l.QUERY_PRODUCT_NAME,
         l.QUERY_MESSAGE,
         l.CALL_DURATION,
+        l.SENDER_MOBILE_ALT || null,
+        l.SENDER_EMAIL_ALT || null,
+        l.SENDER_PINCODE || null,
+        l.QUERY_MCAT_NAME || null,
+        l.RECEIVER_MOBILE || null,
+        l.RECEIVER_CATALOG || null,
         JSON.stringify(l),
       ]
     );
@@ -86,7 +109,8 @@ app.post("/webhook/indiamart", async (req, res) => {
     res.status(200).json({ status: "ok", received: leads.length, inserted });
   } catch (err) {
     console.error("[Push] Webhook error:", err.message);
-    res.status(500).json({ status: "error", message: err.message });
+    // Always return 200 — IndiaMART deactivates webhook after 48hrs of non-200 responses
+    res.status(200).json({ status: "error_logged", message: "received" });
   }
 });
 
@@ -195,11 +219,11 @@ app.get("/", async (req, res) => {
       <tr>
         <td>${r.unique_query_id}</td>
         <td>${r.sender_name || ""}</td>
-        <td>${r.sender_mobile || ""}</td>
+        <td>${r.sender_mobile || ""}${r.sender_mobile_alt ? "<br><small>" + r.sender_mobile_alt + "</small>" : ""}</td>
         <td>${r.sender_email || ""}</td>
         <td>${r.sender_company || ""}</td>
         <td>${r.sender_city || ""}</td>
-        <td>${r.query_product_name || ""}</td>
+        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
         <td>${r.query_time || ""}</td>
       </tr>`
