@@ -200,12 +200,12 @@ async function autoReplyToLead(lead) {
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
   const buyerName = lead.SENDER_NAME || "there";
 
-  let msg;
-  if (match) {
-    msg = `Hi ${buyerName}! Thanks for your enquiry about *${match.name}*.\n\nHere's our catalog with pricing & details:\n${match.url}\n\nFull catalog: https://sale91.com/catalog\n\nFeel free to ask any questions!`;
-  } else {
-    msg = `Hi ${buyerName}! Thanks for your enquiry.\n\nPlease check our full product catalog:\nhttps://sale91.com/catalog\n\nFeel free to ask any questions!`;
+  if (!match) {
+    console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — skipping auto-reply`);
+    return;
   }
+
+  const msg = `Hi ${buyerName}! Thanks for your enquiry about *${match.name}*.\n\nHere's our catalog with pricing & details:\n${match.url}\n\nFeel free to ask any questions!`;
 
   await sendWhatsApp(phone, msg);
 }
@@ -216,6 +216,13 @@ app.post("/webhook/indiamart", async (req, res) => {
     const lead = req.body;
     const leads = Array.isArray(lead) ? lead : [lead];
     const inserted = await insertLeads(leads);
+
+    // Auto-reply via WhatsApp for new leads (don't block response)
+    if (inserted > 0) {
+      for (const l of leads) {
+        autoReplyToLead(l).catch((e) => console.error("[WhatsApp] Auto-reply failed:", e.message));
+      }
+    }
 
     console.log(`[Push] Received ${leads.length} lead(s), inserted ${inserted}`);
     res.status(200).json({ status: "ok", received: leads.length, inserted });
