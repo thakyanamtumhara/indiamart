@@ -45,6 +45,7 @@ async function initDB() {
     "query_mcat_name VARCHAR(500)",
     "receiver_mobile VARCHAR(50)",
     "receiver_catalog VARCHAR(255)",
+    "whatsapp_status VARCHAR(20)",
   ];
   for (const col of newColumns) {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
@@ -174,20 +175,21 @@ function sendWhatsApp(phone, messageText) {
             const json = JSON.parse(data);
             if (json.error) {
               console.error(`[WhatsApp] Failed for ${cleanPhone}: ${json.error.message}`);
+              resolve({ status: "failed", error: json.error.message });
             } else {
               console.log(`[WhatsApp] Sent to ${cleanPhone}: OK`);
+              resolve({ status: "sent" });
             }
-            resolve(json);
           } catch (e) {
             console.error("[WhatsApp] Parse error:", e.message);
-            resolve(null);
+            resolve({ status: "failed", error: e.message });
           }
         });
       }
     );
     req.on("error", (err) => {
       console.error("[WhatsApp] Request error:", err.message);
-      resolve(null);
+      resolve({ status: "failed", error: err.message });
     });
     req.write(body);
     req.end();
@@ -204,16 +206,26 @@ async function autoReplyToLead(lead) {
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
   const buyerName = lead.SENDER_NAME || "there";
 
+  let msg;
   if (!match) {
     console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
-    const genericMsg = `You enquired for *${lead.QUERY_PRODUCT_NAME || "our products"}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.`;
-    await sendWhatsApp(phone, genericMsg);
-    return;
+    msg = `You enquired for *${lead.QUERY_PRODUCT_NAME || "our products"}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.`;
+  } else {
+    msg = `You enquired for *${match.name}*, check price and photos - ${match.url}\n\nAsk if any question.`;
   }
 
-  const msg = `You enquired for *${match.name}*, check price and photos - ${match.url}\n\nAsk if any question.`;
+  const result = await sendWhatsApp(phone, msg);
+  const waStatus = result ? result.status : "failed";
 
-  await sendWhatsApp(phone, msg);
+  // Save WhatsApp delivery status in DB
+  try {
+    await pool.query(
+      "UPDATE leads SET whatsapp_status = $1 WHERE unique_query_id = $2",
+      [waStatus, lead.UNIQUE_QUERY_ID]
+    );
+  } catch (e) {
+    console.error("[WhatsApp] Failed to update status in DB:", e.message);
+  }
 }
 
 // Webhook endpoint — IndiaMART Push API sends leads here
@@ -338,6 +350,26 @@ app.get("/", async (req, res) => {
       "SELECT * FROM leads ORDER BY created_at DESC LIMIT 50"
     );
 
+    // Leads where WhatsApp failed — need to call directly
+    const { rows: failedRows } = await pool.query(
+      "SELECT * FROM leads WHERE whatsapp_status = 'failed' ORDER BY created_at DESC LIMIT 50"
+    );
+
+    const failedTableRows = failedRows
+      .map(
+        (r) => `
+      <tr>
+        <td>${r.sender_name || ""}</td>
+        <td><a href="tel:${r.sender_mobile || ""}" class="call-btn">${r.sender_mobile || ""}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + r.sender_mobile_alt + '" class="call-btn alt">' + r.sender_mobile_alt + "</a>" : ""}</td>
+        <td>${r.sender_company || ""}</td>
+        <td>${r.sender_city || ""}</td>
+        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
+        <td>${(r.query_message || "").substring(0, 80)}</td>
+        <td>${r.query_time || ""}</td>
+      </tr>`
+      )
+      .join("");
+
     const tableRows = rows
       .map(
         (r) => `
@@ -371,10 +403,36 @@ app.get("/", async (req, res) => {
     th { background: #2563eb; color: white; font-weight: 600; }
     tr:hover { background: #f8fafc; }
     .empty { text-align: center; padding: 40px; color: #999; }
+    .call-btn { display: inline-block; padding: 4px 10px; background: #16a34a; color: white; text-decoration: none; border-radius: 4px; font-weight: 600; }
+    .call-btn.alt { background: #6b7280; }
+    .call-btn:hover { opacity: 0.85; }
+    .failed-section { margin-bottom: 30px; }
+    .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
+    .failed-section table th { background: #dc2626; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
   </style>
 </head>
 <body>
   <h1>IndiaMART Leads</h1>
+
+  ${failedRows.length > 0 ? `
+  <div class="failed-section">
+    <h2>WhatsApp Failed — Call Karo <span class="badge">${failedRows.length}</span></h2>
+    <p class="stats">In logon ka WhatsApp nahi hai, directly call karo</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>Phone (Tap to Call)</th><th>Company</th>
+          <th>City</th><th>Product</th><th>Message</th><th>Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${failedTableRows}
+      </tbody>
+    </table>
+  </div>
+  ` : ""}
+
   <p class="stats">Showing ${rows.length} most recent leads</p>
   <table>
     <thead>
