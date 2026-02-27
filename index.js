@@ -172,7 +172,11 @@ function sendWhatsApp(phone, messageText) {
         resp.on("end", () => {
           try {
             const json = JSON.parse(data);
-            console.log(`[WhatsApp] Sent to ${cleanPhone}:`, json.messages ? "OK" : data.substring(0, 200));
+            if (json.error) {
+              console.error(`[WhatsApp] Failed for ${cleanPhone}: ${json.error.message}`);
+            } else {
+              console.log(`[WhatsApp] Sent to ${cleanPhone}: OK`);
+            }
             resolve(json);
           } catch (e) {
             console.error("[WhatsApp] Parse error:", e.message);
@@ -201,7 +205,9 @@ async function autoReplyToLead(lead) {
   const buyerName = lead.SENDER_NAME || "there";
 
   if (!match) {
-    console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — skipping auto-reply`);
+    console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
+    const genericMsg = `You enquired for *${lead.QUERY_PRODUCT_NAME || "our products"}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.`;
+    await sendWhatsApp(phone, genericMsg);
     return;
   }
 
