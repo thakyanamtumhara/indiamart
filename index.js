@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const https = require("https");
 const { Pool } = require("pg");
 
 const app = express();
@@ -38,51 +39,134 @@ async function initDB() {
   console.log("Database initialized");
 }
 
+// Shared function to insert leads into database (used by both Push and Pull)
+async function insertLeads(leads) {
+  let inserted = 0;
+  for (const l of leads) {
+    const result = await pool.query(
+      `INSERT INTO leads (
+        unique_query_id, query_type, query_time, sender_name,
+        sender_mobile, sender_email, sender_company, sender_address,
+        sender_city, sender_state, sender_country_iso,
+        query_product_name, query_message, call_duration, raw_data
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ON CONFLICT (unique_query_id) DO NOTHING
+      RETURNING id`,
+      [
+        l.UNIQUE_QUERY_ID,
+        l.QUERY_TYPE,
+        l.QUERY_TIME || null,
+        l.SENDER_NAME,
+        l.SENDER_MOBILE,
+        l.SENDER_EMAIL,
+        l.SENDER_COMPANY,
+        l.SENDER_ADDRESS,
+        l.SENDER_CITY,
+        l.SENDER_STATE,
+        l.SENDER_COUNTRY_ISO,
+        l.QUERY_PRODUCT_NAME,
+        l.QUERY_MESSAGE,
+        l.CALL_DURATION,
+        JSON.stringify(l),
+      ]
+    );
+    if (result.rowCount > 0) inserted++;
+  }
+  return inserted;
+}
+
 // Webhook endpoint — IndiaMART Push API sends leads here
 app.post("/webhook/indiamart", async (req, res) => {
   try {
     const lead = req.body;
-
-    // IndiaMART may send data as a single object or wrapped in an array
     const leads = Array.isArray(lead) ? lead : [lead];
+    const inserted = await insertLeads(leads);
 
-    let inserted = 0;
-    for (const l of leads) {
-      const result = await pool.query(
-        `INSERT INTO leads (
-          unique_query_id, query_type, query_time, sender_name,
-          sender_mobile, sender_email, sender_company, sender_address,
-          sender_city, sender_state, sender_country_iso,
-          query_product_name, query_message, call_duration, raw_data
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-        ON CONFLICT (unique_query_id) DO NOTHING
-        RETURNING id`,
-        [
-          l.UNIQUE_QUERY_ID,
-          l.QUERY_TYPE,
-          l.QUERY_TIME || null,
-          l.SENDER_NAME,
-          l.SENDER_MOBILE,
-          l.SENDER_EMAIL,
-          l.SENDER_COMPANY,
-          l.SENDER_ADDRESS,
-          l.SENDER_CITY,
-          l.SENDER_STATE,
-          l.SENDER_COUNTRY_ISO,
-          l.QUERY_PRODUCT_NAME,
-          l.QUERY_MESSAGE,
-          l.CALL_DURATION,
-          JSON.stringify(l),
-        ]
-      );
-      if (result.rowCount > 0) inserted++;
-    }
-
-    console.log(`Received ${leads.length} lead(s), inserted ${inserted}`);
+    console.log(`[Push] Received ${leads.length} lead(s), inserted ${inserted}`);
     res.status(200).json({ status: "ok", received: leads.length, inserted });
   } catch (err) {
-    console.error("Webhook error:", err.message);
+    console.error("[Push] Webhook error:", err.message);
     res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// IndiaMART Pull API — fetch leads periodically as backup
+function fetchLeadsFromAPI() {
+  const crmKey = process.env.INDIAMART_CRM_KEY;
+  if (!crmKey) return Promise.resolve(null);
+
+  const now = new Date();
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+  const fmt = (d) =>
+    d.getFullYear() + "-" +
+    String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0") + " " +
+    String(d.getHours()).padStart(2, "0") + ":" +
+    String(d.getMinutes()).padStart(2, "0") + ":" +
+    String(d.getSeconds()).padStart(2, "0");
+
+  const params = new URLSearchParams({
+    glusr_crm_key: crmKey,
+    start_time: fmt(twoHoursAgo),
+    end_time: fmt(now),
+  });
+
+  const url = `https://mapi.indiamart.com/wservce/enquiry/listing/?${params}`;
+
+  return new Promise((resolve) => {
+    https.get(url, (resp) => {
+      let data = "";
+      resp.on("data", (chunk) => (data += chunk));
+      resp.on("end", async () => {
+        try {
+          const json = JSON.parse(data);
+
+          // IndiaMART returns { STATUS: "SUCCESS", RESPONSE: [...leads...] }
+          // or { STATUS: "SUCCESS", CODE: 200, ... } with leads in top-level array
+          let leads = [];
+          if (Array.isArray(json)) {
+            leads = json;
+          } else if (json.RESPONSE && Array.isArray(json.RESPONSE)) {
+            leads = json.RESPONSE;
+          } else if (json.CODE === 200 && json.STATUS === "SUCCESS") {
+            // No new leads
+            console.log("[Pull] No new leads found");
+            return resolve({ fetched: 0, inserted: 0 });
+          } else {
+            console.error("[Pull] Unexpected response:", JSON.stringify(json).substring(0, 200));
+            return resolve(null);
+          }
+
+          if (leads.length === 0) {
+            console.log("[Pull] No new leads found");
+            return resolve({ fetched: 0, inserted: 0 });
+          }
+
+          const inserted = await insertLeads(leads);
+          console.log(`[Pull] Fetched ${leads.length} lead(s), inserted ${inserted}`);
+          resolve({ fetched: leads.length, inserted });
+        } catch (err) {
+          console.error("[Pull] Parse error:", err.message);
+          resolve(null);
+        }
+      });
+    }).on("error", (err) => {
+      console.error("[Pull] Request error:", err.message);
+      resolve(null);
+    });
+  });
+}
+
+// Manual trigger to fetch leads via Pull API
+app.get("/api/fetch-leads", async (req, res) => {
+  if (!process.env.INDIAMART_CRM_KEY) {
+    return res.status(400).json({ error: "INDIAMART_CRM_KEY not configured" });
+  }
+  try {
+    const result = await fetchLeadsFromAPI();
+    res.json({ status: "ok", result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -174,6 +258,16 @@ initDB()
       console.log(`Server running on port ${PORT}`);
       console.log(`Dashboard: http://localhost:${PORT}`);
       console.log(`Webhook URL: http://localhost:${PORT}/webhook/indiamart`);
+
+      // Start Pull API polling if CRM key is configured
+      if (process.env.INDIAMART_CRM_KEY) {
+        const POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
+        console.log("IndiaMART Pull API polling started (every 5 minutes)");
+        fetchLeadsFromAPI(); // fetch once immediately on startup
+        setInterval(fetchLeadsFromAPI, POLL_INTERVAL);
+      } else {
+        console.log("Pull API disabled (set INDIAMART_CRM_KEY to enable)");
+      }
     });
   })
   .catch((err) => {
