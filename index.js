@@ -98,6 +98,118 @@ async function insertLeads(leads) {
   return inserted;
 }
 
+// Product catalog — keyword-to-URL mapping for auto-reply
+const CATALOG_BASE = "https://sale91.com/catalog/p";
+const PRODUCT_CATALOG = [
+  { keywords: ["oversize 210", "210gsm oversize", "210 gsm oversize"], url: `${CATALOG_BASE}/oversize-210gsm/`, name: "Oversize 210gsm" },
+  { keywords: ["oversize 240", "240gsm oversize", "240 gsm oversize"], url: `${CATALOG_BASE}/oversize-240gsm/`, name: "Oversize 240gsm" },
+  { keywords: ["oversize 180", "180gsm oversize", "180 gsm oversize"], url: `${CATALOG_BASE}/oversize-180gsm/`, name: "Oversize 180gsm" },
+  { keywords: ["boxy", "boxy fit"], url: `${CATALOG_BASE}/boxy-fit/`, name: "Boxy Fit" },
+  { keywords: ["acid wash", "acidwash"], url: `${CATALOG_BASE}/acidwash-oversize/`, name: "AcidWash Oversize" },
+  { keywords: ["true biowash", "true bio wash"], url: `${CATALOG_BASE}/true-biowash-round-neck/`, name: "True Biowash Round Neck" },
+  { keywords: ["biowash", "bio wash", "biowash round"], url: `${CATALOG_BASE}/biowash-round-neck/`, name: "Biowash Round Neck" },
+  { keywords: ["non bio", "non-bio", "nonbio"], url: `${CATALOG_BASE}/non-bio-round-neck/`, name: "Non Bio Round Neck" },
+  { keywords: ["sublimation"], url: `${CATALOG_BASE}/sublimation-t-shirt/`, name: "Sublimation T-Shirt" },
+  { keywords: ["premium polo"], url: `${CATALOG_BASE}/premium-polo/`, name: "Premium Polo" },
+  { keywords: ["cotton polo"], url: `${CATALOG_BASE}/cotton-polo/`, name: "Cotton Polo" },
+  { keywords: ["zip hoodie", "zipper hoodie", "zip-hoodie"], url: `${CATALOG_BASE}/zip-hoodie/`, name: "Zip Hoodie" },
+  { keywords: ["dropshoulder hoodie", "drop shoulder hoodie", "430gsm hoodie dropshoulder"], url: `${CATALOG_BASE}/dropshoulder-hoodie-430gsm/`, name: "Dropshoulder Hoodie 430gsm" },
+  { keywords: ["hoodie 430", "430gsm hoodie"], url: `${CATALOG_BASE}/hoodie-430gsm/`, name: "Hoodie 430gsm" },
+  { keywords: ["hoodie 320 black", "hoodie black", "black hoodie"], url: `${CATALOG_BASE}/hoodie-320gsm-black/`, name: "Hoodie 320gsm (Black)" },
+  { keywords: ["hoodie 320", "320gsm hoodie"], url: `${CATALOG_BASE}/hoodie-320gsm/`, name: "Hoodie 320gsm" },
+  { keywords: ["varsity", "varsity jacket"], url: `${CATALOG_BASE}/varsity-jacket/`, name: "Varsity Jacket" },
+  { keywords: ["sweatshirt"], url: `${CATALOG_BASE}/sweatshirt/`, name: "Sweatshirt" },
+  { keywords: ["kids", "kids round", "children"], url: `${CATALOG_BASE}/kids-round-neck/`, name: "Kids Round Neck" },
+  { keywords: ["shorts", "short"], url: `${CATALOG_BASE}/shorts/`, name: "Shorts" },
+  // Generic fallbacks (checked last — match broad terms)
+  { keywords: ["oversize", "over size", "oversized"], url: `${CATALOG_BASE}/oversize-210gsm/`, name: "Oversize T-Shirt" },
+  { keywords: ["hoodie", "hoody"], url: `${CATALOG_BASE}/hoodie-320gsm/`, name: "Hoodie" },
+  { keywords: ["polo"], url: `${CATALOG_BASE}/premium-polo/`, name: "Polo T-Shirt" },
+  { keywords: ["round neck", "roundneck", "tshirt", "t-shirt", "t shirt"], url: `${CATALOG_BASE}/biowash-round-neck/`, name: "Round Neck T-Shirt" },
+];
+
+// Match lead text to a product catalog URL
+function matchProduct(productName, message) {
+  const text = `${productName || ""} ${message || ""}`.toLowerCase();
+  for (const product of PRODUCT_CATALOG) {
+    if (product.keywords.some((kw) => text.includes(kw))) {
+      return product;
+    }
+  }
+  return null; // no match — send full catalog
+}
+
+// Send WhatsApp message via WhatsApp Business API
+function sendWhatsApp(phone, messageText) {
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !token) return Promise.resolve(null);
+
+  // Clean phone number: remove +, -, spaces
+  const cleanPhone = phone.replace(/[\s+\-()]/g, "");
+
+  const body = JSON.stringify({
+    messaging_product: "whatsapp",
+    to: cleanPhone,
+    type: "text",
+    text: { body: messageText },
+  });
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: "graph.facebook.com",
+        path: `/v21.0/${phoneId}/messages`,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      },
+      (resp) => {
+        let data = "";
+        resp.on("data", (chunk) => (data += chunk));
+        resp.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            console.log(`[WhatsApp] Sent to ${cleanPhone}:`, json.messages ? "OK" : data.substring(0, 200));
+            resolve(json);
+          } catch (e) {
+            console.error("[WhatsApp] Parse error:", e.message);
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on("error", (err) => {
+      console.error("[WhatsApp] Request error:", err.message);
+      resolve(null);
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+// Auto-reply to a lead via WhatsApp with matching catalog link
+async function autoReplyToLead(lead) {
+  if (!process.env.WHATSAPP_PHONE_NUMBER_ID) return;
+
+  const phone = lead.SENDER_MOBILE;
+  if (!phone) return;
+
+  const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
+  const buyerName = lead.SENDER_NAME || "there";
+
+  let msg;
+  if (match) {
+    msg = `Hi ${buyerName}! Thanks for your enquiry about *${match.name}*.\n\nHere's our catalog with pricing & details:\n${match.url}\n\nFull catalog: https://sale91.com/catalog\n\nFeel free to ask any questions!`;
+  } else {
+    msg = `Hi ${buyerName}! Thanks for your enquiry.\n\nPlease check our full product catalog:\nhttps://sale91.com/catalog\n\nFeel free to ask any questions!`;
+  }
+
+  await sendWhatsApp(phone, msg);
+}
+
 // Webhook endpoint — IndiaMART Push API sends leads here
 app.post("/webhook/indiamart", async (req, res) => {
   try {
