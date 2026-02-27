@@ -205,7 +205,7 @@ async function autoReplyToLead(lead) {
     return;
   }
 
-  const msg = `Hey ${buyerName} 👋\n\nAapne *${match.name}* ke baare mein pucha tha — yeh raha humara catalog jisme pricing aur sab details hain:\n${match.url}\n\nKoi bhi sawaal ho toh baat karte hain!`;
+  const msg = `Aapne *${match.name}* ke baare mein pucha tha — yeh raha humara catalog jisme pricing aur sab details hain - ${match.url}\n\nAsk if any question.`;
 
   await sendWhatsApp(phone, msg);
 }
