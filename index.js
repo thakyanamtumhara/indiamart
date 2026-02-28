@@ -1072,7 +1072,7 @@ app.get("/", async (req, res) => {
         <td>${typeBadge}</td>
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
-        <td>${toIST(r.query_time)}</td>
+        <td>${toIST(r.query_time)}${r.created_at ? '<br><small style="color:#16a34a">Received: ' + toIST(r.created_at) + '</small>' : ''}</td>
         <td>${waBadge}${waDetails}${waMsg}${waLink}</td>
       </tr>`;
         }
@@ -1210,7 +1210,7 @@ app.get("/", async (req, res) => {
     <thead>
       <tr>
         <th>Name</th><th>Mobile</th>
-        <th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
+        <th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Enquiry / Received</th><th>WhatsApp</th>
       </tr>
     </thead>
     <tbody>
@@ -1304,7 +1304,7 @@ app.get("/", async (req, res) => {
         if (!rows.length) { container.innerHTML = '<p style="color:#94a3b8;padding:12px;">No leads in ' + label + '</p>'; return; }
 
         var html = '<h3 style="margin:16px 0 8px;color:#1e293b;">' + label + ' — ' + rows.length + ' Leads</h3>';
-        html += '<table><thead><tr><th>Name</th><th>Mobile</th><th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>Name</th><th>Mobile</th><th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Enquiry / Received</th><th>WhatsApp</th></tr></thead><tbody>';
 
         rows.forEach(function(r) {
           var typeMap = { B: ['Buy Lead','lead-buy'], W: ['Web Lead','lead-web'], C: ['Call Lead','lead-call'] };
@@ -1325,9 +1325,10 @@ app.get("/", async (req, res) => {
           var city = esc(r.sender_city || '');
           var product = esc(r.query_product_name || '');
           var msg = esc((r.query_message || '').substring(0, 80));
-          var time = r.query_time ? new Date(r.query_time).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+          var timeFmt = function(d) { if (!d) return ''; return new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); };
+          var timeCell = timeFmt(r.query_time) + (r.created_at ? '<br><small style="color:#16a34a">Received: ' + timeFmt(r.created_at) + '</small>' : '');
 
-          html += '<tr><td>' + name + '</td><td>' + mobile + '</td><td>' + company + '</td><td>' + city + '</td><td>' + typeBadge + '</td><td>' + product + '</td><td>' + msg + '</td><td>' + time + '</td><td>' + waBadge + '</td></tr>';
+          html += '<tr><td>' + name + '</td><td>' + mobile + '</td><td>' + company + '</td><td>' + city + '</td><td>' + typeBadge + '</td><td>' + product + '</td><td>' + msg + '</td><td>' + timeCell + '</td><td>' + waBadge + '</td></tr>';
         });
 
         html += '</tbody></table>';
