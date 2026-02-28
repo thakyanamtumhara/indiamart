@@ -657,6 +657,57 @@ app.get("/api/fetch-leads", async (req, res) => {
   }
 });
 
+// Test endpoint — send a test WhatsApp message to verify delivery
+// Usage: /api/test-lead?phone=918527150400&name=Ketu
+app.get("/api/test-lead", async (req, res) => {
+  const phone = req.query.phone || "918527150400";
+  const name = req.query.name || "Ketu";
+  const product = req.query.product || "Oversize T-shirt 240gsm";
+  const queryId = "TEST-" + Date.now();
+
+  const lead = {
+    UNIQUE_QUERY_ID: queryId,
+    QUERY_TYPE: "W",
+    QUERY_TIME: new Date().toISOString(),
+    SENDER_NAME: name,
+    SENDER_MOBILE: phone,
+    SENDER_EMAIL: "test@test.com",
+    SENDER_COMPANY: "Test",
+    SENDER_CITY: "Delhi",
+    QUERY_PRODUCT_NAME: product,
+    QUERY_MESSAGE: "Test lead for WhatsApp delivery verification",
+  };
+
+  try {
+    // Insert into DB
+    await insertLeads([lead]);
+
+    // Send WhatsApp (wait for result, don't fire-and-forget)
+    await autoReplyToLead(lead);
+
+    // Fetch the result from DB
+    const { rows } = await pool.query(
+      "SELECT whatsapp_status, whatsapp_wamid, whatsapp_error, whatsapp_message FROM leads WHERE unique_query_id = $1",
+      [queryId]
+    );
+
+    const result = rows[0] || {};
+    res.json({
+      status: "ok",
+      query_id: queryId,
+      phone,
+      name,
+      whatsapp_status: result.whatsapp_status,
+      whatsapp_wamid: result.whatsapp_wamid,
+      whatsapp_error: result.whatsapp_error,
+      message_sent: result.whatsapp_message,
+      note: "Check your WhatsApp — message aana chahiye!",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Debug: Test IndiaMART API raw response
 app.get("/debug/test-pull-api", (req, res) => {
   const crmKey = process.env.INDIAMART_CRM_KEY;
