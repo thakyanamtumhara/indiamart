@@ -331,6 +331,36 @@ function getProductImage(catalogUrl) {
   return `https://www.bulkplaintshirt.com/catalog/images/${match[1]}/m.webp`;
 }
 
+// Pre-scrape URL on Facebook so OG image is cached before WhatsApp sends link preview
+function preScrapeUrl(url) {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!token || !url) return Promise.resolve(null);
+
+  const postData = `id=${encodeURIComponent(url)}&scrape=true&access_token=${token}`;
+  return new Promise((resolve) => {
+    const r = https.request({
+      hostname: "graph.facebook.com",
+      path: "/v24.0/",
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }, (resp) => {
+      let data = "";
+      resp.on("data", (chunk) => (data += chunk));
+      resp.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+          console.log(`[OG Scrape] ${url} → ${json.title || json.error?.message || "done"}`);
+          resolve(json);
+        } catch (e) { resolve(null); }
+      });
+    });
+    r.setTimeout(10000, () => { r.destroy(); resolve(null); });
+    r.on("error", () => resolve(null));
+    r.write(postData);
+    r.end();
+  });
+}
+
 // Send WhatsApp message via WhatsApp Business API
 // If imageUrl is provided, sends image+caption; otherwise sends text with link preview
 function sendWhatsApp(phone, messageText, imageUrl) {
@@ -451,21 +481,27 @@ async function autoReplyToLead(lead) {
 
   let msg;
   let imageUrl = null;
+  let linkUrl = null;
   if (!match) {
     console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
+    linkUrl = "https://sale91.com/catalog";
     const template = cachedTemplates.generic_reply || "You enquired for *{product_name}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.";
     msg = template
       .replace(/{product_name}/g, lead.QUERY_PRODUCT_NAME || "our products")
-      .replace(/{url}/g, "https://sale91.com/catalog")
+      .replace(/{url}/g, linkUrl)
       .replace(/{sender_name}/g, lead.SENDER_NAME || "");
   } else {
     const template = cachedTemplates.product_reply || "You enquired for *{product_name}*, check price and photos - {url}\n\nAsk if any question.";
+    linkUrl = match.url;
     msg = template
       .replace(/{product_name}/g, match.name)
-      .replace(/{url}/g, match.url)
+      .replace(/{url}/g, linkUrl)
       .replace(/{sender_name}/g, lead.SENDER_NAME || "");
-    // Image disabled — Meta silently drops image messages if it can't fetch the URL
-    // imageUrl = getProductImage(match.url);
+  }
+
+  // Pre-scrape the URL on Facebook so OG image is cached before sending
+  if (linkUrl) {
+    await preScrapeUrl(linkUrl);
   }
 
   const result = await sendWhatsApp(phone, msg, null);
