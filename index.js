@@ -228,11 +228,90 @@ async function autoReplyToLead(lead) {
   }
 }
 
+// Store last webhook payloads for debugging (keep last 10)
+const debugLog = [];
+
+// Normalize IndiaMART field names — Push API uses different names than Pull API
+function normalizeLeadFields(lead) {
+  const normalized = { ...lead };
+
+  // SENDER_PHONE → SENDER_MOBILE (Push API uses SENDER_PHONE)
+  if (!normalized.SENDER_MOBILE && normalized.SENDER_PHONE) {
+    normalized.SENDER_MOBILE = normalized.SENDER_PHONE;
+  }
+  // SENDER_MOBILE_WAPP — some versions send this
+  if (!normalized.SENDER_MOBILE && normalized.SENDER_MOBILE_WAPP) {
+    normalized.SENDER_MOBILE = normalized.SENDER_MOBILE_WAPP;
+  }
+  // SUBJECT → QUERY_PRODUCT_NAME (Push API uses SUBJECT)
+  if (!normalized.QUERY_PRODUCT_NAME && normalized.SUBJECT) {
+    normalized.QUERY_PRODUCT_NAME = normalized.SUBJECT;
+  }
+  // SENDER_PHONE_ALT → SENDER_MOBILE_ALT
+  if (!normalized.SENDER_MOBILE_ALT && normalized.SENDER_PHONE_ALT) {
+    normalized.SENDER_MOBILE_ALT = normalized.SENDER_PHONE_ALT;
+  }
+  // SENDER_COMPANY_IM → SENDER_COMPANY
+  if (!normalized.SENDER_COMPANY && normalized.SENDER_COMPANY_IM) {
+    normalized.SENDER_COMPANY = normalized.SENDER_COMPANY_IM;
+  }
+
+  return normalized;
+}
+
+// Extract leads array from various IndiaMART payload formats
+function extractLeads(body) {
+  // Format 1: Direct array of leads — [{ UNIQUE_QUERY_ID, ... }, ...]
+  if (Array.isArray(body)) {
+    return body.map(normalizeLeadFields);
+  }
+
+  // Format 2: Wrapped in { CODE, STATUS, RESPONSE } — Push API format
+  if (body.CODE !== undefined && body.RESPONSE) {
+    const resp = body.RESPONSE;
+    // RESPONSE can be a single object or array
+    if (Array.isArray(resp)) {
+      return resp.map(normalizeLeadFields);
+    }
+    if (typeof resp === "object" && resp !== null) {
+      return [normalizeLeadFields(resp)];
+    }
+  }
+
+  // Format 3: Single lead object with UNIQUE_QUERY_ID
+  if (body.UNIQUE_QUERY_ID) {
+    return [normalizeLeadFields(body)];
+  }
+
+  // Format 4: Single lead with SENDER_NAME (but no wrapper) — fallback
+  if (body.SENDER_NAME || body.SENDER_PHONE || body.SENDER_MOBILE) {
+    return [normalizeLeadFields(body)];
+  }
+
+  console.error("[Push] Unknown payload format:", JSON.stringify(body).substring(0, 500));
+  return [];
+}
+
 // Webhook endpoint — IndiaMART Push API sends leads here
 app.post("/webhook/indiamart", async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const rawBody = req.body;
+
+  // Log full incoming data for debugging
+  console.log(`[Push] ${timestamp} — Raw payload:`, JSON.stringify(rawBody).substring(0, 1000));
+
+  // Save to debug log (keep last 10)
+  debugLog.unshift({ timestamp, payload: rawBody });
+  if (debugLog.length > 10) debugLog.pop();
+
   try {
-    const lead = req.body;
-    const leads = Array.isArray(lead) ? lead : [lead];
+    const leads = extractLeads(rawBody);
+
+    if (leads.length === 0) {
+      console.log(`[Push] ${timestamp} — No valid leads found in payload`);
+      return res.status(200).json({ status: "ok", received: 0, inserted: 0, note: "no_valid_leads_in_payload" });
+    }
+
     const inserted = await insertLeads(leads);
 
     // Auto-reply via WhatsApp for new leads (don't block response)
@@ -242,13 +321,21 @@ app.post("/webhook/indiamart", async (req, res) => {
       }
     }
 
-    console.log(`[Push] Received ${leads.length} lead(s), inserted ${inserted}`);
+    console.log(`[Push] ${timestamp} — Received ${leads.length} lead(s), inserted ${inserted}`);
     res.status(200).json({ status: "ok", received: leads.length, inserted });
   } catch (err) {
-    console.error("[Push] Webhook error:", err.message);
+    console.error(`[Push] ${timestamp} — Webhook error:`, err.message, err.stack);
     // Always return 200 — IndiaMART deactivates webhook after 48hrs of non-200 responses
     res.status(200).json({ status: "error_logged", message: "received" });
   }
+});
+
+// Debug endpoint — see last 10 webhook payloads
+app.get("/debug/last-webhook", (req, res) => {
+  res.json({
+    total_received: debugLog.length,
+    payloads: debugLog,
+  });
 });
 
 // IndiaMART Pull API — fetch leads periodically as backup
