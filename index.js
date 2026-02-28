@@ -530,6 +530,27 @@ async function autoReplyToLead(lead) {
     return;
   }
 
+  // Dedup: skip if same phone number was already messaged in last 24 hours
+  try {
+    const recentMsg = await pool.query(
+      `SELECT unique_query_id FROM leads
+       WHERE sender_mobile = $1
+         AND unique_query_id != $2
+         AND whatsapp_status IN ('sent','delivered','read')
+         AND whatsapp_sent_at > NOW() - INTERVAL '24 hours'
+       LIMIT 1`,
+      [phone, lead.UNIQUE_QUERY_ID]
+    );
+    if (recentMsg.rows.length > 0) {
+      console.log(`[WhatsApp] Duplicate phone ${phone} — already messaged via ${recentMsg.rows[0].unique_query_id}, skipping`);
+      await pool.query(
+        "UPDATE leads SET whatsapp_status = $1, whatsapp_error = $2 WHERE unique_query_id = $3",
+        ["skipped", "Duplicate: already messaged this number", lead.UNIQUE_QUERY_ID]
+      );
+      return;
+    }
+  } catch (e) { /* proceed if check fails */ }
+
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
 
   let msg;
