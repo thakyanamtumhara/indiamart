@@ -46,6 +46,8 @@ async function initDB() {
     "receiver_mobile VARCHAR(50)",
     "receiver_catalog VARCHAR(255)",
     "whatsapp_status VARCHAR(20)",
+    "whatsapp_message TEXT",
+    "whatsapp_sent_at TIMESTAMP",
   ];
   for (const col of newColumns) {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
@@ -217,11 +219,11 @@ async function autoReplyToLead(lead) {
   const result = await sendWhatsApp(phone, msg);
   const waStatus = result ? result.status : "failed";
 
-  // Save WhatsApp delivery status in DB
+  // Save WhatsApp delivery status, message text, and sent time in DB
   try {
     await pool.query(
-      "UPDATE leads SET whatsapp_status = $1 WHERE unique_query_id = $2",
-      [waStatus, lead.UNIQUE_QUERY_ID]
+      "UPDATE leads SET whatsapp_status = $1, whatsapp_message = $2, whatsapp_sent_at = $3 WHERE unique_query_id = $4",
+      [waStatus, msg, new Date().toISOString(), lead.UNIQUE_QUERY_ID]
     );
   } catch (e) {
     console.error("[WhatsApp] Failed to update status in DB:", e.message);
@@ -459,18 +461,38 @@ app.get("/", async (req, res) => {
 
     const tableRows = rows
       .map(
-        (r) => `
+        (r) => {
+          // WhatsApp status badge
+          let waBadge = '<span class="wa-badge wa-pending">Pending</span>';
+          if (r.whatsapp_status === "sent") {
+            waBadge = '<span class="wa-badge wa-sent">Sent</span>';
+          } else if (r.whatsapp_status === "failed") {
+            waBadge = '<span class="wa-badge wa-failed">Failed</span>';
+          }
+
+          // WhatsApp sent time (readable format)
+          let waTime = "";
+          if (r.whatsapp_sent_at) {
+            const d = new Date(r.whatsapp_sent_at);
+            waTime = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+          }
+
+          // WhatsApp message preview (truncate)
+          const waMsg = r.whatsapp_message ? r.whatsapp_message.replace(/\n/g, " ").substring(0, 60) + (r.whatsapp_message.length > 60 ? "..." : "") : "";
+
+          return `
       <tr>
         <td>${r.unique_query_id}</td>
         <td>${r.sender_name || ""}</td>
         <td>${r.sender_mobile || ""}${r.sender_mobile_alt ? "<br><small>" + r.sender_mobile_alt + "</small>" : ""}</td>
-        <td>${r.sender_email || ""}</td>
         <td>${r.sender_company || ""}</td>
         <td>${r.sender_city || ""}</td>
         <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
         <td>${r.query_time || ""}</td>
-      </tr>`
+        <td>${waBadge}${waTime ? "<br><small>" + waTime + "</small>" : ""}${waMsg ? '<br><small class="wa-msg">' + waMsg + "</small>" : ""}</td>
+      </tr>`;
+        }
       )
       .join("");
 
@@ -497,6 +519,11 @@ app.get("/", async (req, res) => {
     .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
     .failed-section table th { background: #dc2626; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
+    .wa-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: white; }
+    .wa-sent { background: #16a34a; }
+    .wa-failed { background: #dc2626; }
+    .wa-pending { background: #9ca3af; }
+    .wa-msg { color: #6b7280; font-style: italic; }
   </style>
 </head>
 <body>
@@ -524,12 +551,13 @@ app.get("/", async (req, res) => {
   <table>
     <thead>
       <tr>
-        <th>Query ID</th><th>Name</th><th>Mobile</th><th>Email</th>
-        <th>Company</th><th>City</th><th>Product</th><th>Message</th><th>Time</th>
+        <th>Query ID</th><th>Name</th><th>Mobile</th>
+        <th>Company</th><th>City</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
       </tr>
     </thead>
     <tbody>
       ${tableRows || '<tr><td colspan="9" class="empty">No leads yet. Waiting for IndiaMART to push data...</td></tr>'}
+
     </tbody>
   </table>
 </body>
