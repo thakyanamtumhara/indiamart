@@ -708,7 +708,7 @@ app.get("/", async (req, res) => {
         <td>${r.sender_city || ""}</td>
         <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
-        <td>${r.query_time || ""}</td>
+        <td>${toIST(r.query_time)}</td>
         <td>${waBadge}${waDetails}${waLink}</td>
       </tr>`;
         }
