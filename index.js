@@ -1020,7 +1020,7 @@ app.get("/api/test-lead", async (req, res) => {
       whatsapp_wamid: result.whatsapp_wamid,
       whatsapp_error: result.whatsapp_error,
       message_sent: result.whatsapp_message,
-      payload_sent: waResult && waResult.payload_sent ? JSON.parse(waResult.payload_sent) : null,
+      payload_sent: waResult ? waResult.payload_sent : null,
       note: "Check your WhatsApp — message aana chahiye!",
     });
   } catch (err) {
