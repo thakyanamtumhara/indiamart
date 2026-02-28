@@ -430,13 +430,27 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
         resp.on("end", () => {
           try {
             const json = JSON.parse(data);
+
+            // Check HTTP status code first — anything non-2xx is a failure
+            if (resp.statusCode < 200 || resp.statusCode >= 300) {
+              const errMsg = json.error ? json.error.message : `HTTP ${resp.statusCode}: ${data.substring(0, 200)}`;
+              console.error(`[WhatsApp] API error for ${cleanPhone} (HTTP ${resp.statusCode}): ${errMsg}`);
+              resolve({ status: "failed", error: errMsg });
+              return;
+            }
+
             if (json.error) {
               console.error(`[WhatsApp] Failed for ${cleanPhone}: ${json.error.message}`);
               resolve({ status: "failed", error: json.error.message });
             } else {
               const wamid = json.messages && json.messages[0] ? json.messages[0].id : null;
-              console.log(`[WhatsApp] Sent to ${cleanPhone}: OK (wamid: ${wamid})`);
-              resolve({ status: "sent", wamid });
+              if (!wamid) {
+                console.error(`[WhatsApp] No message ID returned for ${cleanPhone} — response: ${data.substring(0, 200)}`);
+                resolve({ status: "failed", error: "No message ID returned by API" });
+              } else {
+                console.log(`[WhatsApp] Sent to ${cleanPhone}: OK (wamid: ${wamid})`);
+                resolve({ status: "sent", wamid });
+              }
             }
           } catch (e) {
             console.error("[WhatsApp] Parse error:", e.message);
