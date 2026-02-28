@@ -491,7 +491,7 @@ function fetchLeadsFromAPI(startTime, endTime) {
     end_time: fmtIST(end),
   });
 
-  const url = `https://mapi.indiamart.com/wservce/enquiry/listing/?${params}`;
+  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?${params}`;
   console.log(`[Pull] Fetching leads: ${fmtIST(start)} → ${fmtIST(end)}`);
   console.log(`[Pull] URL: ${url.replace(crmKey, "***")}`);
 
@@ -597,6 +597,37 @@ app.get("/api/fetch-leads", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Debug: Test IndiaMART API raw response
+app.get("/debug/test-pull-api", (req, res) => {
+  const crmKey = process.env.INDIAMART_CRM_KEY;
+  if (!crmKey) return res.status(400).json({ error: "INDIAMART_CRM_KEY not set" });
+
+  const now = new Date();
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+
+  const params = new URLSearchParams({
+    glusr_crm_key: crmKey,
+    start_time: fmtIST(twoHoursAgo),
+    end_time: fmtIST(now),
+  });
+
+  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?${params}`;
+
+  https.get(url, (resp) => {
+    let data = "";
+    resp.on("data", (chunk) => (data += chunk));
+    resp.on("end", () => {
+      res.json({
+        url: url.replace(crmKey, "***"),
+        http_status: resp.statusCode,
+        raw_response: data.substring(0, 2000),
+      });
+    });
+  }).on("error", (err) => {
+    res.json({ error: err.message });
+  });
 });
 
 // JSON API — for future integrations (WhatsApp, CRM, etc.)
