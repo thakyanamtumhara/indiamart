@@ -1035,9 +1035,28 @@ app.get("/api/debug-send", async (req, res) => {
   if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set" });
 
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
-  const mode = req.query.mode || "text"; // ?mode=image to test image
+  const mode = req.query.mode || "text"; // ?mode=image|template to test
   let payload;
-  if (mode === "image") {
+  if (mode === "template") {
+    const templateName = req.query.template || process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
+    const productName = req.query.product || "Oversize T-Shirt";
+    const slug = req.query.slug || "oversize-210gsm";
+    const headerImage = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components: [
+          { type: "header", parameters: [{ type: "image", image: { link: headerImage } }] },
+          { type: "body", parameters: [{ type: "text", text: productName }] },
+          { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `p/${slug}` }] },
+        ],
+      },
+    });
+  } else if (mode === "image") {
     const imgUrl = req.query.image || "https://www.bulkplaintshirt.com/catalog/images/biowash-round-neck/m.webp";
     payload = JSON.stringify({
       messaging_product: "whatsapp",
