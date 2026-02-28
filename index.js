@@ -1660,11 +1660,14 @@ app.get("/", async (req, res) => {
     }
 
     // ─── KEYWORDS ───
+    var kwDataMap = {};
     function loadKeywords() {
       fetch('/api/keywords').then(function(r) { return r.json(); }).then(function(data) {
         var tbody = document.getElementById('kw-tbody');
         tbody.innerHTML = '';
+        kwDataMap = {};
         data.forEach(function(p) {
+          kwDataMap[p.id] = p;
           var kwTags = (p.keywords || []).map(function(k) { return '<span class="kw-tag">' + k + '</span>'; }).join(' ');
           var tr = document.createElement('tr');
           tr.id = 'kw-row-' + p.id;
@@ -1674,7 +1677,7 @@ app.get("/", async (req, res) => {
             '<td>' + kwTags + '</td>' +
             '<td>' + (p.is_fallback ? '<span class="kw-fallback">Fallback</span>' : 'Specific') + '</td>' +
             '<td>' +
-              '<button class="btn btn-edit btn-sm" onclick="editKeyword(' + p.id + ',' + JSON.stringify(JSON.stringify(p)) + ')">Edit</button> ' +
+              '<button class="btn btn-edit btn-sm" onclick="editKeyword(' + p.id + ')">Edit</button> ' +
               '<button class="btn btn-danger btn-sm" onclick="deleteKeyword(' + p.id + ')">Delete</button>' +
             '</td>';
           tbody.appendChild(tr);
@@ -1682,8 +1685,9 @@ app.get("/", async (req, res) => {
       });
     }
 
-    function editKeyword(id, jsonStr) {
-      var p = JSON.parse(jsonStr);
+    function editKeyword(id) {
+      var p = kwDataMap[id];
+      if (!p) return;
       var row = document.getElementById('kw-row-' + id);
       if (!row) return;
       var kwStr = (p.keywords || []).join(', ');
