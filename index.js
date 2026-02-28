@@ -55,19 +55,49 @@ async function initDB() {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
   }
 
-  // Fix existing records with invalid phone numbers — mark them as "failed"
-  // This catches leads that were inserted before phone validation was added
+  // One-time migration: clean phone numbers that were stored with +/- formatting
   await pool.query(`
     UPDATE leads
-    SET whatsapp_status = 'failed',
-        whatsapp_error = 'Invalid number: ' || COALESCE(sender_mobile, 'none')
-    WHERE whatsapp_status = 'sent'
-    AND (
-      sender_mobile IS NULL
-      OR sender_mobile !~ '^(91)?[6-9][0-9]{9}$'
-      OR sender_mobile ~ '^(91)?(\\d)\\2{9}$'
-    )
+    SET sender_mobile = regexp_replace(sender_mobile, '[^0-9]', '', 'g')
+    WHERE sender_mobile ~ '[^0-9]'
   `);
+  // Add 91 prefix to bare 10-digit numbers
+  await pool.query(`
+    UPDATE leads
+    SET sender_mobile = '91' || sender_mobile
+    WHERE sender_mobile ~ '^[6-9][0-9]{9}$'
+  `);
+
+  // Reset leads that were wrongly marked as "failed" due to phone formatting
+  // These have valid cleaned numbers now, so retry them
+  await pool.query(`
+    UPDATE leads
+    SET whatsapp_status = NULL, whatsapp_error = NULL
+    WHERE whatsapp_status = 'failed'
+    AND whatsapp_error LIKE 'Invalid number:%'
+    AND sender_mobile ~ '^91[6-9][0-9]{9}$'
+  `);
+
+  // Retry leads that were wrongly marked as failed (now reset to NULL)
+  const pending = await pool.query(
+    `SELECT unique_query_id, sender_mobile, query_product_name, query_message, sender_name
+     FROM leads WHERE whatsapp_status IS NULL AND sender_mobile IS NOT NULL
+     LIMIT 50`
+  );
+  if (pending.rows.length > 0) {
+    console.log(`[Init] Retrying ${pending.rows.length} lead(s) with pending WhatsApp status...`);
+    for (const row of pending.rows) {
+      // Build a lead object matching autoReplyToLead expectations
+      const lead = {
+        UNIQUE_QUERY_ID: row.unique_query_id,
+        SENDER_MOBILE: row.sender_mobile,
+        QUERY_PRODUCT_NAME: row.query_product_name,
+        QUERY_MESSAGE: row.query_message,
+        SENDER_NAME: row.sender_name,
+      };
+      autoReplyToLead(lead).catch((e) => console.error(`[Init] Retry failed for ${row.unique_query_id}:`, e.message));
+    }
+  }
 
   console.log("Database initialized");
 }
@@ -93,7 +123,7 @@ async function insertLeads(leads) {
         l.QUERY_TYPE,
         l.QUERY_TIME || null,
         l.SENDER_NAME,
-        l.SENDER_MOBILE,
+        cleanPhoneNumber(l.SENDER_MOBILE) || null,
         l.SENDER_EMAIL,
         l.SENDER_COMPANY,
         l.SENDER_ADDRESS,
@@ -103,7 +133,7 @@ async function insertLeads(leads) {
         l.QUERY_PRODUCT_NAME,
         l.QUERY_MESSAGE,
         l.CALL_DURATION,
-        l.SENDER_MOBILE_ALT || null,
+        cleanPhoneNumber(l.SENDER_MOBILE_ALT) || null,
         l.SENDER_EMAIL_ALT || null,
         l.SENDER_PINCODE || null,
         l.QUERY_MCAT_NAME || null,
@@ -156,6 +186,16 @@ function matchProduct(productName, message) {
     }
   }
   return null; // no match — send full catalog
+}
+
+// Clean phone number: remove +, -, spaces, parens → return "91XXXXXXXXXX"
+function cleanPhoneNumber(phone) {
+  if (!phone) return null;
+  const cleaned = phone.replace(/[\s+\-()]/g, "");
+  if (!cleaned) return null;
+  if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) return "91" + cleaned;
+  if (cleaned.startsWith("91") && cleaned.length === 12) return cleaned;
+  return cleaned; // return as-is if format unknown
 }
 
 // Validate Indian mobile number — must be 10 digits starting with 6-9
@@ -231,6 +271,17 @@ function sendWhatsApp(phone, messageText) {
 // Auto-reply to a lead via WhatsApp with matching catalog link
 async function autoReplyToLead(lead) {
   if (!process.env.WHATSAPP_PHONE_NUMBER_ID) return;
+
+  // Skip if already processed (prevents duplicate messages)
+  try {
+    const existing = await pool.query(
+      "SELECT whatsapp_status FROM leads WHERE unique_query_id = $1",
+      [lead.UNIQUE_QUERY_ID]
+    );
+    if (existing.rows.length > 0 && existing.rows[0].whatsapp_status) {
+      return; // already sent/delivered/read/failed — don't re-send
+    }
+  } catch (e) { /* proceed if check fails */ }
 
   const phone = lead.SENDER_MOBILE;
   if (!phone) {
@@ -651,6 +702,12 @@ function toIST(dateVal) {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
 }
 
+// HTML-escape to prevent XSS from untrusted lead data
+function esc(str) {
+  if (!str) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // Dashboard — simple HTML page to view leads
 app.get("/", async (req, res) => {
   try {
@@ -667,12 +724,12 @@ app.get("/", async (req, res) => {
       .map(
         (r) => `
       <tr>
-        <td>${r.sender_name || ""}</td>
-        <td><a href="tel:${r.sender_mobile || ""}" class="call-btn">${r.sender_mobile || ""}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + r.sender_mobile_alt + '" class="call-btn alt">' + r.sender_mobile_alt + "</a>" : ""}</td>
-        <td>${r.sender_company || ""}</td>
-        <td>${r.sender_city || ""}</td>
-        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
-        <td>${(r.query_message || "").substring(0, 80)}</td>
+        <td>${esc(r.sender_name)}</td>
+        <td><a href="tel:${esc(r.sender_mobile)}" class="call-btn">${esc(r.sender_mobile)}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + esc(r.sender_mobile_alt) + '" class="call-btn alt">' + esc(r.sender_mobile_alt) + "</a>" : ""}</td>
+        <td>${esc(r.sender_company)}</td>
+        <td>${esc(r.sender_city)}</td>
+        <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
+        <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
       </tr>`
       )
@@ -697,7 +754,7 @@ app.get("/", async (req, res) => {
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">Failed</span>';
             if (r.whatsapp_error) {
-              waDetails = `<br><small class="wa-error">${r.whatsapp_error}</small>`;
+              waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
             }
           } else {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
@@ -713,13 +770,13 @@ app.get("/", async (req, res) => {
 
           return `
       <tr>
-        <td>${r.unique_query_id}</td>
-        <td>${r.sender_name || ""}</td>
-        <td>${r.sender_mobile || ""}${r.sender_mobile_alt ? "<br><small>" + r.sender_mobile_alt + "</small>" : ""}</td>
-        <td>${r.sender_company || ""}</td>
-        <td>${r.sender_city || ""}</td>
-        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
-        <td>${(r.query_message || "").substring(0, 80)}</td>
+        <td>${esc(r.unique_query_id)}</td>
+        <td>${esc(r.sender_name)}</td>
+        <td>${esc(r.sender_mobile)}${r.sender_mobile_alt ? "<br><small>" + esc(r.sender_mobile_alt) + "</small>" : ""}</td>
+        <td>${esc(r.sender_company)}</td>
+        <td>${esc(r.sender_city)}</td>
+        <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
+        <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
         <td>${waBadge}${waDetails}${waLink}</td>
       </tr>`;
