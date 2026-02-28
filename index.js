@@ -1622,7 +1622,7 @@ app.get("/", async (req, res) => {
           } else if (r.whatsapp_status === 'called') {
             waCell = '<span class="wa-badge wa-called">&#9742; Called</span>';
           } else if (r.whatsapp_status) {
-            var link = r.whatsapp_link || ((r.whatsapp_message || '').match(/https?:\/\/[^\s]+/) || [])[0] || '';
+            var link = r.whatsapp_link || ((r.whatsapp_message || '').match(/https?:\\/\\/[^\\s]+/) || [])[0] || '';
             if (link) waCell = '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(link) + '</a>';
             else waCell = '<span class="wa-badge wa-sent">Sent</span>';
           } else {
