@@ -55,6 +55,20 @@ async function initDB() {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
   }
 
+  // Fix existing records with invalid phone numbers — mark them as "failed"
+  // This catches leads that were inserted before phone validation was added
+  await pool.query(`
+    UPDATE leads
+    SET whatsapp_status = 'failed',
+        whatsapp_error = 'Invalid number: ' || COALESCE(sender_mobile, 'none')
+    WHERE whatsapp_status = 'sent'
+    AND (
+      sender_mobile IS NULL
+      OR sender_mobile !~ '^(91)?[6-9][0-9]{9}$'
+      OR sender_mobile ~ '^(91)?(\\d)\\2{9}$'
+    )
+  `);
+
   console.log("Database initialized");
 }
 
@@ -689,14 +703,12 @@ app.get("/", async (req, res) => {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
           }
 
-          // wa.me link — opens WhatsApp Web with pre-filled message
+          // Follow-up link — open WhatsApp chat for manual follow-up
           let waLink = "";
-          if (r.sender_mobile) {
+          if (r.sender_mobile && r.whatsapp_status !== "failed") {
             const cleanNum = (r.sender_mobile || "").replace(/[\s+\-()]/g, "");
             const waNum = cleanNum.startsWith("91") ? cleanNum : "91" + cleanNum;
-            const waText = r.whatsapp_message || ("You enquired for *" + (r.query_product_name || "our products") + "*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.");
-            const encoded = encodeURIComponent(waText);
-            waLink = '<br><a href="https://wa.me/' + waNum + '?text=' + encoded + '" target="_blank" class="wa-web-btn">Chat on WhatsApp</a>';
+            waLink = '<br><a href="https://wa.me/' + waNum + '" target="_blank" class="wa-web-btn">Follow Up</a>';
           }
 
           return `
