@@ -362,8 +362,9 @@ function preScrapeUrl(url) {
 }
 
 // Send WhatsApp message via WhatsApp Business API
-// If imageUrl is provided, sends image+caption; otherwise sends text with link preview
-function sendWhatsApp(phone, messageText, imageUrl) {
+// Uses approved template message for first-contact (business-initiated) conversations
+// templateParams: { name: "template_name", lang: "en", bodyParams: ["param1", "param2"] }
+function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   if (!phoneId || !token) return Promise.resolve(null);
@@ -372,8 +373,28 @@ function sendWhatsApp(phone, messageText, imageUrl) {
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
 
   let payload;
-  if (imageUrl) {
-    // Image message with caption — guaranteed image preview
+  if (templateParams) {
+    // Template message — works for all numbers (no 24-hour window needed)
+    const components = [];
+    if (templateParams.bodyParams && templateParams.bodyParams.length > 0) {
+      components.push({
+        type: "body",
+        parameters: templateParams.bodyParams.map((p) => ({ type: "text", text: p })),
+      });
+    }
+    payload = {
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "template",
+      template: {
+        name: templateParams.name,
+        language: { code: templateParams.lang || "en" },
+        components,
+      },
+    };
+    console.log(`[WhatsApp] Sending template "${templateParams.name}" to ${cleanPhone} with params: ${JSON.stringify(templateParams.bodyParams)}`);
+  } else if (imageUrl) {
+    // Image message with caption — only works within 24-hour conversation window
     payload = {
       messaging_product: "whatsapp",
       to: cleanPhone,
@@ -381,7 +402,7 @@ function sendWhatsApp(phone, messageText, imageUrl) {
       image: { link: imageUrl, caption: messageText },
     };
   } else {
-    // Text message with link preview fallback
+    // Text message with link preview — only works within 24-hour conversation window
     payload = {
       messaging_product: "whatsapp",
       to: cleanPhone,
@@ -503,7 +524,19 @@ async function autoReplyToLead(lead) {
     await preScrapeUrl(linkUrl);
   }
 
-  const result = await sendWhatsApp(phone, msg, null);
+  // Use template message for business-initiated conversations (first contact)
+  // Template: indiamart_template with {{1}}=product name, {{2}}=URL
+  const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart_template";
+  const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
+  const productName = match ? match.name : (lead.QUERY_PRODUCT_NAME || "our products");
+
+  const templateParams = {
+    name: templateName,
+    lang: templateLang,
+    bodyParams: [productName, linkUrl],
+  };
+
+  const result = await sendWhatsApp(phone, msg, null, templateParams);
   const waStatus = result ? result.status : "failed";
   const waError = result && result.error ? result.error : null;
   const waWamid = result && result.wamid ? result.wamid : null;
