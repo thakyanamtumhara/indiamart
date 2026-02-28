@@ -283,7 +283,7 @@ function matchProduct(productName, message) {
     }
   }
   if (bestMatch) {
-    return { name: bestMatch.product_name, url: `${CATALOG_BASE}/${bestMatch.url_slug}/` };
+    return { name: bestMatch.product_name, slug: bestMatch.url_slug, url: `${CATALOG_BASE}/${bestMatch.url_slug}/` };
   }
   return null; // no match — send full catalog
 }
@@ -390,8 +390,8 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
         parameters: templateParams.bodyParams.map((p) => ({ type: "text", text: p })),
       });
     }
-    // Button URL parameter ({{2}} = URL suffix after "https://")
-    if (templateParams.buttonUrlSuffix) {
+    // Button URL parameter ({{1}} = product slug after base URL)
+    if (templateParams.buttonUrlSuffix !== undefined) {
       components.push({
         type: "button",
         sub_type: "url",
@@ -556,13 +556,13 @@ async function autoReplyToLead(lead) {
   }
 
   // Use template message for business-initiated conversations (first contact)
-  // Template: indiamart_template — {{1}}=product name (body), {{2}}=URL suffix (button)
+  // Template: indiamart_template — body {{1}}=product name, button URL {{1}}=product slug
   const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart_template";
   const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
   const productName = match ? match.name : (lead.QUERY_PRODUCT_NAME || "our products");
   const headerImageUrl = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
-  // Button URL: template has "https://{{2}}", so send the part after "https://"
-  const buttonUrlSuffix = linkUrl.replace(/^https?:\/\//, "");
+  // Button URL: template has "https://www.bulkplaintshirt.com/catalog/p/{{1}}", so send just the slug
+  const buttonUrlSuffix = match ? match.slug : "";
 
   const templateParams = {
     name: templateName,
