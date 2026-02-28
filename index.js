@@ -394,6 +394,11 @@ function sendWhatsApp(phone, messageText, imageUrl) {
         });
       }
     );
+    req.setTimeout(15000, () => {
+      console.error("[WhatsApp] Request timeout for", cleanPhone);
+      req.destroy();
+      resolve({ status: "failed", error: "Request timeout (15s)" });
+    });
     req.on("error", (err) => {
       console.error("[WhatsApp] Request error:", err.message);
       resolve({ status: "failed", error: err.message });
