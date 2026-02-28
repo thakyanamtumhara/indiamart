@@ -922,6 +922,17 @@ app.delete("/api/keywords/:id", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Mark a failed lead as "called" (done — remove from failed list)
+app.post("/api/lead/:id/called", async (req, res) => {
+  try {
+    await pool.query(
+      "UPDATE leads SET whatsapp_status = 'called' WHERE unique_query_id = $1",
+      [req.params.id]
+    );
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Format any date/timestamp to IST for display on dashboard
 function toIST(dateVal) {
   if (!dateVal) return "";
@@ -951,7 +962,7 @@ app.get("/", async (req, res) => {
     const failedTableRows = failedRows
       .map(
         (r) => `
-      <tr>
+      <tr id="failed-${esc(r.unique_query_id)}">
         <td>${esc(r.sender_name)}</td>
         <td><a href="tel:${esc(r.sender_mobile)}" class="call-btn">${esc(r.sender_mobile)}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + esc(r.sender_mobile_alt) + '" class="call-btn alt">' + esc(r.sender_mobile_alt) + "</a>" : ""}</td>
         <td>${esc(r.sender_company)}</td>
@@ -959,6 +970,7 @@ app.get("/", async (req, res) => {
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
+        <td><button class="btn btn-success btn-sm done-btn" onclick="markCalled('${esc(r.unique_query_id)}')">Done</button></td>
       </tr>`
       )
       .join("");
@@ -984,6 +996,8 @@ app.get("/", async (req, res) => {
             if (r.whatsapp_error) {
               waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
             }
+          } else if (r.whatsapp_status === "called") {
+            waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
           } else {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
           }
@@ -1042,6 +1056,7 @@ app.get("/", async (req, res) => {
     .failed-section { margin-bottom: 30px; }
     .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
     .failed-section table th { background: #dc2626; }
+    .done-btn { white-space: nowrap; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
     .lead-type { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; white-space: nowrap; }
     .lead-buy { background: #dbeafe; color: #1d4ed8; }
@@ -1057,6 +1072,7 @@ app.get("/", async (req, res) => {
     .wa-read .wa-ticks { color: #53bdeb; }
     .wa-read .wa-label { color: #53bdeb; }
     .wa-failed { color: #dc2626; }
+    .wa-called { color: #16a34a; font-weight: 700; }
     .wa-pending { color: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
     .wa-error { color: #dc2626; font-size: 11px; }
@@ -1106,7 +1122,7 @@ app.get("/", async (req, res) => {
       <thead>
         <tr>
           <th>Name</th><th>Phone (Tap to Call)</th><th>Company</th>
-          <th>City</th><th>Product</th><th>Message</th><th>Time</th>
+          <th>City</th><th>Product</th><th>Message</th><th>Time</th><th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -1170,6 +1186,19 @@ app.get("/", async (req, res) => {
       t.style.background = ok ? '#16a34a' : '#dc2626';
       t.style.display = 'block';
       setTimeout(function() { t.style.display = 'none'; }, 2000);
+    }
+
+    // ─── MARK CALLED (Done) ───
+    function markCalled(queryId) {
+      fetch('/api/lead/' + queryId + '/called', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.status === 'ok') {
+            var row = document.getElementById('failed-' + queryId);
+            if (row) row.style.display = 'none';
+            showToast('Done! List se hata diya', true);
+          } else { showToast('Error', false); }
+        });
     }
 
     // ─── TEMPLATES ───
