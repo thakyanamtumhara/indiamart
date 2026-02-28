@@ -588,6 +588,67 @@ app.get("/debug/last-webhook", (req, res) => {
   });
 });
 
+// Debug: Check WhatsApp API health — token validity, phone number status, wallet
+app.get("/debug/whatsapp-status", async (req, res) => {
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set", phoneId: !!phoneId, token: !!token });
+
+  const results = {};
+
+  // 1. Check phone number info
+  try {
+    const phoneInfo = await new Promise((resolve) => {
+      const r = https.request({
+        hostname: "graph.facebook.com",
+        path: `/v21.0/${phoneId}`,
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }, (resp) => {
+        let data = "";
+        resp.on("data", (chunk) => (data += chunk));
+        resp.on("end", () => { try { resolve(JSON.parse(data)); } catch(e) { resolve({ raw: data }); } });
+      });
+      r.on("error", (err) => resolve({ error: err.message }));
+      r.end();
+    });
+    results.phone_info = phoneInfo;
+  } catch(e) { results.phone_info = { error: e.message }; }
+
+  // 2. Check WABA (Business Account) info
+  try {
+    const wabaId = results.phone_info && results.phone_info.account_id;
+    if (wabaId) {
+      const wabaInfo = await new Promise((resolve) => {
+        const r = https.request({
+          hostname: "graph.facebook.com",
+          path: `/v21.0/${wabaId}?fields=name,currency,timezone_id,message_template_namespace`,
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+        }, (resp) => {
+          let data = "";
+          resp.on("data", (chunk) => (data += chunk));
+          resp.on("end", () => { try { resolve(JSON.parse(data)); } catch(e) { resolve({ raw: data }); } });
+        });
+        r.on("error", (err) => resolve({ error: err.message }));
+        r.end();
+      });
+      results.waba_info = wabaInfo;
+    }
+  } catch(e) { results.waba_info = { error: e.message }; }
+
+  // 3. Last 3 sent messages from DB
+  try {
+    const { rows } = await pool.query(
+      `SELECT unique_query_id, sender_name, sender_mobile, whatsapp_status, whatsapp_wamid, whatsapp_error, whatsapp_sent_at, whatsapp_message
+       FROM leads WHERE whatsapp_status IS NOT NULL ORDER BY whatsapp_sent_at DESC NULLS LAST LIMIT 3`
+    );
+    results.last_messages = rows;
+  } catch(e) { results.last_messages = { error: e.message }; }
+
+  res.json(results);
+});
+
 // WhatsApp Webhook — verification (GET) for Meta setup
 app.get("/webhook/whatsapp", (req, res) => {
   const mode = req.query["hub.mode"];
