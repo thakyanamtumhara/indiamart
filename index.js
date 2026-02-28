@@ -366,7 +366,7 @@ function sendWhatsApp(phone, messageText, imageUrl) {
     const req = https.request(
       {
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}/messages`,
+        path: `/v24.0/${phoneId}/messages`,
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -606,7 +606,7 @@ app.get("/debug/whatsapp-status", async (req, res) => {
     const phoneInfo = await new Promise((resolve) => {
       const r = https.request({
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}`,
+        path: `/v24.0/${phoneId}`,
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
       }, (resp) => {
@@ -627,7 +627,7 @@ app.get("/debug/whatsapp-status", async (req, res) => {
       const wabaInfo = await new Promise((resolve) => {
         const r = https.request({
           hostname: "graph.facebook.com",
-          path: `/v21.0/${wabaId}?fields=name,currency,timezone_id,message_template_namespace`,
+          path: `/v24.0/${wabaId}?fields=name,currency,timezone_id,message_template_namespace`,
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         }, (resp) => {
@@ -939,7 +939,7 @@ app.get("/api/debug-send", async (req, res) => {
     const result = await new Promise((resolve) => {
       const r = https.request({
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}/messages`,
+        path: `/v24.0/${phoneId}/messages`,
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
