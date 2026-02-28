@@ -530,14 +530,14 @@ async function autoReplyToLead(lead) {
     return;
   }
 
-  // Dedup: skip if same phone number was already messaged in last 24 hours
+  // Dedup: skip if same phone number was already messaged in last 1 hour
   try {
     const recentMsg = await pool.query(
       `SELECT unique_query_id FROM leads
        WHERE sender_mobile = $1
          AND unique_query_id != $2
          AND whatsapp_status IN ('sent','delivered','read')
-         AND whatsapp_sent_at > NOW() - INTERVAL '24 hours'
+         AND whatsapp_sent_at > NOW() - INTERVAL '1 hour'
        LIMIT 1`,
       [phone, lead.UNIQUE_QUERY_ID]
     );
