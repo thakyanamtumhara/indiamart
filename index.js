@@ -366,7 +366,7 @@ function sendWhatsApp(phone, messageText, imageUrl) {
     const req = https.request(
       {
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}/messages`,
+        path: `/v24.0/${phoneId}/messages`,
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -606,7 +606,7 @@ app.get("/debug/whatsapp-status", async (req, res) => {
     const phoneInfo = await new Promise((resolve) => {
       const r = https.request({
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}`,
+        path: `/v24.0/${phoneId}`,
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
       }, (resp) => {
@@ -627,7 +627,7 @@ app.get("/debug/whatsapp-status", async (req, res) => {
       const wabaInfo = await new Promise((resolve) => {
         const r = https.request({
           hostname: "graph.facebook.com",
-          path: `/v21.0/${wabaId}?fields=name,currency,timezone_id,message_template_namespace`,
+          path: `/v24.0/${wabaId}?fields=name,currency,timezone_id,message_template_namespace`,
           method: "GET",
           headers: { Authorization: `Bearer ${token}` },
         }, (resp) => {
@@ -928,18 +928,30 @@ app.get("/api/debug-send", async (req, res) => {
   if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set" });
 
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
-  const payload = JSON.stringify({
-    messaging_product: "whatsapp",
-    to: cleanPhone,
-    type: "text",
-    text: { body: "Debug test — agar ye message aaya toh WhatsApp API kaam kar rahi hai." },
-  });
+  const mode = req.query.mode || "text"; // ?mode=image to test image
+  let payload;
+  if (mode === "image") {
+    const imgUrl = req.query.image || "https://www.bulkplaintshirt.com/catalog/images/biowash-round-neck/m.webp";
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "image",
+      image: { link: imgUrl, caption: "Debug image test — agar ye photo aaya toh image sending kaam kar rahi hai." },
+    });
+  } else {
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "text",
+      text: { body: "Debug test — agar ye message aaya toh WhatsApp API kaam kar rahi hai." },
+    });
+  }
 
   try {
     const result = await new Promise((resolve) => {
       const r = https.request({
         hostname: "graph.facebook.com",
-        path: `/v21.0/${phoneId}/messages`,
+        path: `/v24.0/${phoneId}/messages`,
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
