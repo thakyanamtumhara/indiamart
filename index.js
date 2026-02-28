@@ -211,8 +211,18 @@ function isValidIndianMobile(phone) {
   return true;
 }
 
+// Derive product image URL from catalog page URL
+// sale91.com/catalog/p/oversize-210gsm/ → bulkplaintshirt.com/catalog/images/oversize-210gsm/m.webp
+function getProductImage(catalogUrl) {
+  if (!catalogUrl) return null;
+  const match = catalogUrl.match(/\/catalog\/p\/([^/]+)/);
+  if (!match) return null;
+  return `https://www.bulkplaintshirt.com/catalog/images/${match[1]}/m.webp`;
+}
+
 // Send WhatsApp message via WhatsApp Business API
-function sendWhatsApp(phone, messageText) {
+// If imageUrl is provided, sends image+caption; otherwise sends text with link preview
+function sendWhatsApp(phone, messageText, imageUrl) {
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   if (!phoneId || !token) return Promise.resolve(null);
@@ -220,12 +230,26 @@ function sendWhatsApp(phone, messageText) {
   // Clean phone number: remove +, -, spaces
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
 
-  const body = JSON.stringify({
-    messaging_product: "whatsapp",
-    to: cleanPhone,
-    type: "text",
-    text: { preview_url: true, body: messageText },
-  });
+  let payload;
+  if (imageUrl) {
+    // Image message with caption — guaranteed image preview
+    payload = {
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "image",
+      image: { link: imageUrl, caption: messageText },
+    };
+  } else {
+    // Text message with link preview fallback
+    payload = {
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "text",
+      text: { preview_url: true, body: messageText },
+    };
+  }
+
+  const body = JSON.stringify(payload);
 
   return new Promise((resolve) => {
     const req = https.request(
@@ -310,14 +334,16 @@ async function autoReplyToLead(lead) {
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
 
   let msg;
+  let imageUrl = null;
   if (!match) {
     console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
     msg = `You enquired for *${lead.QUERY_PRODUCT_NAME || "our products"}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.`;
   } else {
     msg = `You enquired for *${match.name}*, check price and photos - ${match.url}\n\nAsk if any question.`;
+    imageUrl = getProductImage(match.url);
   }
 
-  const result = await sendWhatsApp(phone, msg);
+  const result = await sendWhatsApp(phone, msg, imageUrl);
   const waStatus = result ? result.status : "failed";
   const waError = result && result.error ? result.error : null;
   const waWamid = result && result.wamid ? result.wamid : null;
@@ -822,12 +848,18 @@ app.get("/", async (req, res) => {
           // WhatsApp message sent (truncated for display)
           const waMsg = r.whatsapp_message ? `<br><small class="wa-msg">${esc((r.whatsapp_message || "").substring(0, 100))}</small>` : "";
 
+          // Lead type badge
+          const typeMap = { B: ["Buy Lead", "lead-buy"], W: ["Web Lead", "lead-web"], C: ["Call Lead", "lead-call"] };
+          const [typeLabel, typeCls] = typeMap[r.query_type] || [r.query_type || "—", "lead-other"];
+          const typeBadge = `<span class="lead-type ${typeCls}">${typeLabel}</span>`;
+
           return `
       <tr>
         <td>${esc(r.sender_name)}</td>
         <td>${esc(r.sender_mobile)}${r.sender_mobile_alt ? "<br><small>" + esc(r.sender_mobile_alt) + "</small>" : ""}</td>
         <td>${esc(r.sender_company)}</td>
         <td>${esc(r.sender_city)}</td>
+        <td>${typeBadge}</td>
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
@@ -860,6 +892,11 @@ app.get("/", async (req, res) => {
     .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
     .failed-section table th { background: #dc2626; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
+    .lead-type { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .lead-buy { background: #dbeafe; color: #1d4ed8; }
+    .lead-web { background: #dcfce7; color: #15803d; }
+    .lead-call { background: #fef3c7; color: #b45309; }
+    .lead-other { background: #f3f4f6; color: #6b7280; }
     .wa-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; white-space: nowrap; }
     .wa-ticks { font-size: 16px; letter-spacing: -4px; margin-right: 2px; }
     .wa-sent .wa-ticks { color: #9ca3af; }
@@ -902,11 +939,11 @@ app.get("/", async (req, res) => {
     <thead>
       <tr>
         <th>Name</th><th>Mobile</th>
-        <th>Company</th><th>City</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
+        <th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
       </tr>
     </thead>
     <tbody>
-      ${tableRows || '<tr><td colspan="8" class="empty">No leads yet. Waiting for IndiaMART to push data...</td></tr>'}
+      ${tableRows || '<tr><td colspan="9" class="empty">No leads yet. Waiting for IndiaMART to push data...</td></tr>'}
 
     </tbody>
   </table>
