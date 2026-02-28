@@ -248,13 +248,23 @@ async function loadProducts() {
 }
 
 // Match lead text to a product from cached DB keywords
+// Priority: longest keyword match wins, so "oversize" beats "over s"
 function matchProduct(productName, message) {
   const text = `${productName || ""} ${message || ""}`.toLowerCase();
+  let bestMatch = null;
+  let bestLen = 0;
   for (const product of cachedProducts) {
     const keywords = product.keywords || [];
-    if (keywords.some((kw) => text.includes(kw.toLowerCase()))) {
-      return { name: product.product_name, url: `${CATALOG_BASE}/${product.url_slug}/` };
+    for (const kw of keywords) {
+      const kwLower = kw.toLowerCase();
+      if (text.includes(kwLower) && kwLower.length > bestLen) {
+        bestMatch = product;
+        bestLen = kwLower.length;
+      }
     }
+  }
+  if (bestMatch) {
+    return { name: bestMatch.product_name, url: `${CATALOG_BASE}/${bestMatch.url_slug}/` };
   }
   return null; // no match — send full catalog
 }
