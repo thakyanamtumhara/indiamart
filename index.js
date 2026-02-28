@@ -390,7 +390,7 @@ function fmtIST(d) {
 // IndiaMART Pull API — fetch leads for a given time window
 function fetchLeadsFromAPI(startTime, endTime) {
   const crmKey = process.env.INDIAMART_CRM_KEY;
-  if (!crmKey) return Promise.resolve(null);
+  if (!crmKey) return Promise.resolve({ fetched: 0, inserted: 0, error: "INDIAMART_CRM_KEY not set in environment" });
 
   const start = startTime || new Date(Date.now() - 2 * 60 * 60 * 1000);
   const end = endTime || new Date();
@@ -428,8 +428,9 @@ function fetchLeadsFromAPI(startTime, endTime) {
               return resolve({ fetched: 0, inserted: 0 });
             }
           } else {
-            console.error("[Pull] Unexpected response:", JSON.stringify(json).substring(0, 500));
-            return resolve(null);
+            const detail = JSON.stringify(json).substring(0, 500);
+            console.error("[Pull] Unexpected response:", detail);
+            return resolve({ fetched: 0, inserted: 0, error: `API error: CODE=${json.CODE}, STATUS=${json.STATUS}, MSG=${json.MESSAGE || json.message || detail.substring(0, 200)}` });
           }
 
           if (leads.length === 0) {
@@ -450,12 +451,12 @@ function fetchLeadsFromAPI(startTime, endTime) {
           resolve({ fetched: leads.length, inserted });
         } catch (err) {
           console.error("[Pull] Parse error:", err.message, "| Raw:", data.substring(0, 300));
-          resolve(null);
+          resolve({ fetched: 0, inserted: 0, error: `Parse error: ${err.message} | Raw: ${data.substring(0, 200)}` });
         }
       });
     }).on("error", (err) => {
       console.error("[Pull] Request error:", err.message);
-      resolve(null);
+      resolve({ fetched: 0, inserted: 0, error: `Request error: ${err.message}` });
     });
   });
 }
@@ -476,13 +477,9 @@ async function fetchLeadsForDays(days) {
 
     console.log(`[Pull] Fetching day ${days - i + 1}/${days}: ${fmtIST(dayStart)} → ${fmtIST(dayEnd)}`);
     const result = await fetchLeadsFromAPI(dayStart, dayEnd);
-    if (result) {
-      totalFetched += result.fetched;
-      totalInserted += result.inserted;
-      results.push({ day: fmtIST(dayStart).split(" ")[0], ...result });
-    } else {
-      results.push({ day: fmtIST(dayStart).split(" ")[0], error: "failed" });
-    }
+    totalFetched += result.fetched || 0;
+    totalInserted += result.inserted || 0;
+    results.push({ day: fmtIST(dayStart).split(" ")[0], ...result });
   }
 
   return { totalFetched, totalInserted, days: results };
