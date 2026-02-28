@@ -919,6 +919,55 @@ app.get("/api/test-lead", async (req, res) => {
   }
 });
 
+// Debug: Raw WhatsApp send — returns full Meta API response for diagnosis
+app.get("/api/debug-send", async (req, res) => {
+  const phone = req.query.phone || "918527150400";
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+
+  if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set" });
+
+  const cleanPhone = phone.replace(/[\s+\-()]/g, "");
+  const payload = JSON.stringify({
+    messaging_product: "whatsapp",
+    to: cleanPhone,
+    type: "text",
+    text: { body: "Debug test — agar ye message aaya toh WhatsApp API kaam kar rahi hai." },
+  });
+
+  try {
+    const result = await new Promise((resolve) => {
+      const r = https.request({
+        hostname: "graph.facebook.com",
+        path: `/v21.0/${phoneId}/messages`,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }, (resp) => {
+        let data = "";
+        resp.on("data", (chunk) => (data += chunk));
+        resp.on("end", () => {
+          resolve({
+            http_status: resp.statusCode,
+            headers: resp.headers,
+            body: (() => { try { return JSON.parse(data); } catch(e) { return data; } })(),
+          });
+        });
+      });
+      r.setTimeout(15000, () => { r.destroy(); resolve({ error: "Timeout 15s" }); });
+      r.on("error", (err) => resolve({ error: err.message }));
+      r.write(payload);
+      r.end();
+    });
+
+    res.json({ phone: cleanPhone, phone_id: phoneId, result });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // Debug: Test IndiaMART API raw response
 app.get("/debug/test-pull-api", (req, res) => {
   const crmKey = process.env.INDIAMART_CRM_KEY;
