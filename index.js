@@ -465,16 +465,14 @@ app.post("/webhook/whatsapp", async (req, res) => {
   }
 });
 
-// Date formatter for IndiaMART API (IST timezone, DD-MM-YYYY HH:MM:SS)
+// Date formatter for IndiaMART API — DD-MON-YYYY format (no encoding issues)
+// e.g. "28-FEB-2026" — IndiaMART's recommended format 1
 function fmtIST(d) {
-  // Convert to IST string (UTC+5:30)
+  const months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
   const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
   return String(ist.getUTCDate()).padStart(2, "0") + "-" +
-    String(ist.getUTCMonth() + 1).padStart(2, "0") + "-" +
-    ist.getUTCFullYear() + " " +
-    String(ist.getUTCHours()).padStart(2, "0") + ":" +
-    String(ist.getUTCMinutes()).padStart(2, "0") + ":" +
-    String(ist.getUTCSeconds()).padStart(2, "0");
+    months[ist.getUTCMonth()] + "-" +
+    ist.getUTCFullYear();
 }
 
 // IndiaMART Pull API — fetch leads for a given time window
@@ -485,13 +483,8 @@ function fetchLeadsFromAPI(startTime, endTime) {
   const start = startTime || new Date(Date.now() - 2 * 60 * 60 * 1000);
   const end = endTime || new Date();
 
-  const params = new URLSearchParams({
-    glusr_crm_key: crmKey,
-    start_time: fmtIST(start),
-    end_time: fmtIST(end),
-  });
-
-  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?${params}`;
+  // Use DD-MON-YYYY format — no URL encoding issues (no spaces/colons)
+  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?glusr_crm_key=${crmKey}&start_time=${fmtIST(start)}&end_time=${fmtIST(end)}`;
   console.log(`[Pull] Fetching leads: ${fmtIST(start)} → ${fmtIST(end)}`);
   console.log(`[Pull] URL: ${url.replace(crmKey, "***")}`);
 
@@ -607,13 +600,7 @@ app.get("/debug/test-pull-api", (req, res) => {
   const now = new Date();
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
-  const params = new URLSearchParams({
-    glusr_crm_key: crmKey,
-    start_time: fmtIST(twoHoursAgo),
-    end_time: fmtIST(now),
-  });
-
-  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?${params}`;
+  const url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?glusr_crm_key=${crmKey}&start_time=${fmtIST(twoHoursAgo)}&end_time=${fmtIST(now)}`;
 
   https.get(url, (resp) => {
     let data = "";
@@ -642,6 +629,14 @@ app.get("/api/leads", async (req, res) => {
   }
 });
 
+// Format any date/timestamp to IST for display on dashboard
+function toIST(dateVal) {
+  if (!dateVal) return "";
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return String(dateVal);
+  return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
+}
+
 // Dashboard — simple HTML page to view leads
 app.get("/", async (req, res) => {
   try {
@@ -664,7 +659,7 @@ app.get("/", async (req, res) => {
         <td>${r.sender_city || ""}</td>
         <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
-        <td>${r.query_time || ""}</td>
+        <td>${toIST(r.query_time)}</td>
       </tr>`
       )
       .join("");
@@ -678,25 +673,13 @@ app.get("/", async (req, res) => {
 
           if (r.whatsapp_status === "read") {
             waBadge = '<span class="wa-badge wa-read">Read</span>';
-            if (r.whatsapp_sent_at) {
-              const d = new Date(r.whatsapp_sent_at);
-              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
-              waDetails = `<br><small>${timeStr}</small>`;
-            }
+            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "delivered") {
             waBadge = '<span class="wa-badge wa-delivered">Delivered</span>';
-            if (r.whatsapp_sent_at) {
-              const d = new Date(r.whatsapp_sent_at);
-              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
-              waDetails = `<br><small>${timeStr}</small>`;
-            }
+            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "sent") {
             waBadge = '<span class="wa-badge wa-sent">Sent</span>';
-            if (r.whatsapp_sent_at) {
-              const d = new Date(r.whatsapp_sent_at);
-              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
-              waDetails = `<br><small>${timeStr}</small>`;
-            }
+            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">Failed</span>';
             if (r.whatsapp_error) {
