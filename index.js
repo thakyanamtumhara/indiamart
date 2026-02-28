@@ -556,26 +556,29 @@ app.get("/", async (req, res) => {
           let waDetails = "";
 
           if (r.whatsapp_status === "sent") {
-            waBadge = '<span class="wa-badge wa-sent">Sent</span>';
-            // Show sent time
+            waBadge = '<span class="wa-badge wa-sent">Sent (API)</span>';
             if (r.whatsapp_sent_at) {
               const d = new Date(r.whatsapp_sent_at);
               const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
               waDetails = `<br><small>${timeStr}</small>`;
             }
-            // Show message preview
-            if (r.whatsapp_message) {
-              const msgPreview = r.whatsapp_message.replace(/\n/g, " ").substring(0, 50) + (r.whatsapp_message.length > 50 ? "..." : "");
-              waDetails += `<br><small class="wa-msg">${msgPreview}</small>`;
-            }
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">Failed</span>';
-            // Show error reason
             if (r.whatsapp_error) {
               waDetails = `<br><small class="wa-error">${r.whatsapp_error}</small>`;
             }
           } else {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
+          }
+
+          // wa.me link — opens WhatsApp Web with pre-filled message
+          let waLink = "";
+          if (r.sender_mobile) {
+            const cleanNum = (r.sender_mobile || "").replace(/[\s+\-()]/g, "");
+            const waNum = cleanNum.startsWith("91") ? cleanNum : "91" + cleanNum;
+            const waText = r.whatsapp_message || ("You enquired for *" + (r.query_product_name || "our products") + "*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.");
+            const encoded = encodeURIComponent(waText);
+            waLink = '<br><a href="https://wa.me/' + waNum + '?text=' + encoded + '" target="_blank" class="wa-web-btn">Chat on WhatsApp</a>';
           }
 
           return `
@@ -588,7 +591,7 @@ app.get("/", async (req, res) => {
         <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
         <td>${r.query_time || ""}</td>
-        <td>${waBadge}${waDetails}</td>
+        <td>${waBadge}${waDetails}${waLink}</td>
       </tr>`;
         }
       )
@@ -623,6 +626,8 @@ app.get("/", async (req, res) => {
     .wa-pending { background: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
     .wa-error { color: #dc2626; font-size: 11px; }
+    .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .wa-web-btn:hover { background: #1da851; }
   </style>
 </head>
 <body>
