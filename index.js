@@ -1592,6 +1592,8 @@ app.get("/", async (req, res) => {
           card.onclick = function() { loadMonthLeads(m.month_key, m.month_label); };
           grid.appendChild(card);
         });
+      }).catch(function(e) {
+        document.getElementById('month-grid').innerHTML = '<p style="color:#dc2626">Error loading months: ' + e.message + '</p>';
       });
     }
 
@@ -1663,6 +1665,7 @@ app.get("/", async (req, res) => {
     var kwDataMap = {};
     function loadKeywords() {
       fetch('/api/keywords').then(function(r) { return r.json(); }).then(function(data) {
+        if (!Array.isArray(data)) { document.getElementById('kw-tbody').innerHTML = '<tr><td colspan="6" style="color:#dc2626">API error: ' + JSON.stringify(data) + '</td></tr>'; return; }
         var tbody = document.getElementById('kw-tbody');
         tbody.innerHTML = '';
         kwDataMap = {};
@@ -1682,6 +1685,8 @@ app.get("/", async (req, res) => {
             '</td>';
           tbody.appendChild(tr);
         });
+      }).catch(function(e) {
+        document.getElementById('kw-tbody').innerHTML = '<tr><td colspan="6" style="color:#dc2626">Error: ' + e.message + '</td></tr>';
       });
     }
 
