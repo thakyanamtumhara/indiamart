@@ -13,6 +13,10 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
 });
 
+// In-memory cache for templates and product keywords (loaded from DB)
+let cachedTemplates = {};
+let cachedProducts = [];
+
 // Initialize database table
 async function initDB() {
   await pool.query(`
@@ -36,6 +40,84 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+
+  // Message templates table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS message_templates (
+      id SERIAL PRIMARY KEY,
+      template_key VARCHAR(50) UNIQUE NOT NULL,
+      template_text TEXT NOT NULL,
+      description VARCHAR(255),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Product keywords table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_keywords (
+      id SERIAL PRIMARY KEY,
+      product_name VARCHAR(255) NOT NULL,
+      url_slug VARCHAR(255) NOT NULL,
+      keywords TEXT[] NOT NULL DEFAULT '{}',
+      sort_order INT DEFAULT 100,
+      is_fallback BOOLEAN DEFAULT false,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  // Seed default templates if table is empty
+  const tmplCount = await pool.query("SELECT COUNT(*) FROM message_templates");
+  if (parseInt(tmplCount.rows[0].count) === 0) {
+    await pool.query(
+      `INSERT INTO message_templates (template_key, template_text, description) VALUES
+        ('product_reply', E'You enquired for *{product_name}*, check price and photos - {url}\\n\\nAsk if any question.', 'Sent when a product keyword matches'),
+        ('generic_reply', E'You enquired for *{product_name}*, check our full catalog - https://sale91.com/catalog\\n\\nAsk if any question.', 'Sent when no product matches')
+      `
+    );
+    console.log("[Init] Seeded default message templates");
+  }
+
+  // Seed default product keywords if table is empty
+  const kwCount = await pool.query("SELECT COUNT(*) FROM product_keywords");
+  if (parseInt(kwCount.rows[0].count) === 0) {
+    const defaultProducts = [
+      ["Oversize 210gsm", "oversize-210gsm", ["oversize 210","210gsm oversize","210 gsm oversize"], 1, false],
+      ["Oversize 240gsm", "oversize-240gsm", ["oversize 240","240gsm oversize","240 gsm oversize"], 2, false],
+      ["Oversize 180gsm", "oversize-180gsm", ["oversize 180","180gsm oversize","180 gsm oversize"], 3, false],
+      ["Boxy Fit", "boxy-fit", ["boxy","boxy fit"], 4, false],
+      ["AcidWash Oversize", "acidwash-oversize", ["acid wash","acidwash"], 5, false],
+      ["True Biowash Round Neck", "true-biowash-round-neck", ["true biowash","true bio wash"], 6, false],
+      ["Biowash Round Neck", "biowash-round-neck", ["biowash","bio wash","biowash round"], 7, false],
+      ["Non Bio Round Neck", "non-bio-round-neck", ["non bio","non-bio","nonbio"], 8, false],
+      ["Sublimation T-Shirt", "sublimation-t-shirt", ["sublimation"], 9, false],
+      ["Premium Polo", "premium-polo", ["premium polo"], 10, false],
+      ["Cotton Polo", "cotton-polo", ["cotton polo"], 11, false],
+      ["Zip Hoodie", "zip-hoodie", ["zip hoodie","zipper hoodie","zip-hoodie"], 12, false],
+      ["Dropshoulder Hoodie 430gsm", "dropshoulder-hoodie-430gsm", ["dropshoulder hoodie","drop shoulder hoodie","430gsm hoodie dropshoulder"], 13, false],
+      ["Hoodie 430gsm", "hoodie-430gsm", ["hoodie 430","430gsm hoodie"], 14, false],
+      ["Hoodie 320gsm (Black)", "hoodie-320gsm-black", ["hoodie 320 black","hoodie black","black hoodie"], 15, false],
+      ["Hoodie 320gsm", "hoodie-320gsm", ["hoodie 320","320gsm hoodie"], 16, false],
+      ["Varsity Jacket", "varsity-jacket", ["varsity","varsity jacket"], 17, false],
+      ["Sweatshirt", "sweatshirt", ["sweatshirt"], 18, false],
+      ["Kids Round Neck", "kids-round-neck", ["kids","kids round","children"], 19, false],
+      ["Shorts", "shorts", ["shorts","short"], 20, false],
+      ["Oversize T-Shirt", "oversize-210gsm", ["oversize","over size","oversized"], 900, true],
+      ["Hoodie", "hoodie-320gsm", ["hoodie","hoody"], 901, true],
+      ["Polo T-Shirt", "premium-polo", ["polo"], 902, true],
+      ["Round Neck T-Shirt", "biowash-round-neck", ["round neck","roundneck","tshirt","t-shirt","t shirt"], 903, true],
+    ];
+    for (const [name, slug, kws, order, fallback] of defaultProducts) {
+      await pool.query(
+        "INSERT INTO product_keywords (product_name, url_slug, keywords, sort_order, is_fallback) VALUES ($1, $2, $3, $4, $5)",
+        [name, slug, kws, order, fallback]
+      );
+    }
+    console.log("[Init] Seeded default product keywords");
+  }
+
+  // Load templates and products into cache
+  await loadTemplates();
+  await loadProducts();
 
   // Add columns for additional IndiaMART fields (safe to run repeatedly)
   const newColumns = [
@@ -147,42 +229,31 @@ async function insertLeads(leads) {
   return inserted;
 }
 
-// Product catalog — keyword-to-URL mapping for auto-reply
+// Catalog base URL for building product links
 const CATALOG_BASE = "https://sale91.com/catalog/p";
-const PRODUCT_CATALOG = [
-  { keywords: ["oversize 210", "210gsm oversize", "210 gsm oversize"], url: `${CATALOG_BASE}/oversize-210gsm/`, name: "Oversize 210gsm" },
-  { keywords: ["oversize 240", "240gsm oversize", "240 gsm oversize"], url: `${CATALOG_BASE}/oversize-240gsm/`, name: "Oversize 240gsm" },
-  { keywords: ["oversize 180", "180gsm oversize", "180 gsm oversize"], url: `${CATALOG_BASE}/oversize-180gsm/`, name: "Oversize 180gsm" },
-  { keywords: ["boxy", "boxy fit"], url: `${CATALOG_BASE}/boxy-fit/`, name: "Boxy Fit" },
-  { keywords: ["acid wash", "acidwash"], url: `${CATALOG_BASE}/acidwash-oversize/`, name: "AcidWash Oversize" },
-  { keywords: ["true biowash", "true bio wash"], url: `${CATALOG_BASE}/true-biowash-round-neck/`, name: "True Biowash Round Neck" },
-  { keywords: ["biowash", "bio wash", "biowash round"], url: `${CATALOG_BASE}/biowash-round-neck/`, name: "Biowash Round Neck" },
-  { keywords: ["non bio", "non-bio", "nonbio"], url: `${CATALOG_BASE}/non-bio-round-neck/`, name: "Non Bio Round Neck" },
-  { keywords: ["sublimation"], url: `${CATALOG_BASE}/sublimation-t-shirt/`, name: "Sublimation T-Shirt" },
-  { keywords: ["premium polo"], url: `${CATALOG_BASE}/premium-polo/`, name: "Premium Polo" },
-  { keywords: ["cotton polo"], url: `${CATALOG_BASE}/cotton-polo/`, name: "Cotton Polo" },
-  { keywords: ["zip hoodie", "zipper hoodie", "zip-hoodie"], url: `${CATALOG_BASE}/zip-hoodie/`, name: "Zip Hoodie" },
-  { keywords: ["dropshoulder hoodie", "drop shoulder hoodie", "430gsm hoodie dropshoulder"], url: `${CATALOG_BASE}/dropshoulder-hoodie-430gsm/`, name: "Dropshoulder Hoodie 430gsm" },
-  { keywords: ["hoodie 430", "430gsm hoodie"], url: `${CATALOG_BASE}/hoodie-430gsm/`, name: "Hoodie 430gsm" },
-  { keywords: ["hoodie 320 black", "hoodie black", "black hoodie"], url: `${CATALOG_BASE}/hoodie-320gsm-black/`, name: "Hoodie 320gsm (Black)" },
-  { keywords: ["hoodie 320", "320gsm hoodie"], url: `${CATALOG_BASE}/hoodie-320gsm/`, name: "Hoodie 320gsm" },
-  { keywords: ["varsity", "varsity jacket"], url: `${CATALOG_BASE}/varsity-jacket/`, name: "Varsity Jacket" },
-  { keywords: ["sweatshirt"], url: `${CATALOG_BASE}/sweatshirt/`, name: "Sweatshirt" },
-  { keywords: ["kids", "kids round", "children"], url: `${CATALOG_BASE}/kids-round-neck/`, name: "Kids Round Neck" },
-  { keywords: ["shorts", "short"], url: `${CATALOG_BASE}/shorts/`, name: "Shorts" },
-  // Generic fallbacks (checked last — match broad terms)
-  { keywords: ["oversize", "over size", "oversized"], url: `${CATALOG_BASE}/oversize-210gsm/`, name: "Oversize T-Shirt" },
-  { keywords: ["hoodie", "hoody"], url: `${CATALOG_BASE}/hoodie-320gsm/`, name: "Hoodie" },
-  { keywords: ["polo"], url: `${CATALOG_BASE}/premium-polo/`, name: "Polo T-Shirt" },
-  { keywords: ["round neck", "roundneck", "tshirt", "t-shirt", "t shirt"], url: `${CATALOG_BASE}/biowash-round-neck/`, name: "Round Neck T-Shirt" },
-];
 
-// Match lead text to a product catalog URL
+// Load templates from DB into cache
+async function loadTemplates() {
+  const { rows } = await pool.query("SELECT template_key, template_text FROM message_templates");
+  cachedTemplates = {};
+  for (const r of rows) cachedTemplates[r.template_key] = r.template_text;
+  console.log(`[Cache] Loaded ${rows.length} message templates`);
+}
+
+// Load product keywords from DB into cache (sorted by sort_order)
+async function loadProducts() {
+  const { rows } = await pool.query("SELECT * FROM product_keywords ORDER BY sort_order ASC, id ASC");
+  cachedProducts = rows;
+  console.log(`[Cache] Loaded ${rows.length} product keywords`);
+}
+
+// Match lead text to a product from cached DB keywords
 function matchProduct(productName, message) {
   const text = `${productName || ""} ${message || ""}`.toLowerCase();
-  for (const product of PRODUCT_CATALOG) {
-    if (product.keywords.some((kw) => text.includes(kw))) {
-      return product;
+  for (const product of cachedProducts) {
+    const keywords = product.keywords || [];
+    if (keywords.some((kw) => text.includes(kw.toLowerCase()))) {
+      return { name: product.product_name, url: `${CATALOG_BASE}/${product.url_slug}/` };
     }
   }
   return null; // no match — send full catalog
@@ -337,9 +408,17 @@ async function autoReplyToLead(lead) {
   let imageUrl = null;
   if (!match) {
     console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
-    msg = `You enquired for *${lead.QUERY_PRODUCT_NAME || "our products"}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.`;
+    const template = cachedTemplates.generic_reply || "You enquired for *{product_name}*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.";
+    msg = template
+      .replace(/{product_name}/g, lead.QUERY_PRODUCT_NAME || "our products")
+      .replace(/{url}/g, "https://sale91.com/catalog")
+      .replace(/{sender_name}/g, lead.SENDER_NAME || "");
   } else {
-    msg = `You enquired for *${match.name}*, check price and photos - ${match.url}\n\nAsk if any question.`;
+    const template = cachedTemplates.product_reply || "You enquired for *{product_name}*, check price and photos - {url}\n\nAsk if any question.";
+    msg = template
+      .replace(/{product_name}/g, match.name)
+      .replace(/{url}/g, match.url)
+      .replace(/{sender_name}/g, lead.SENDER_NAME || "");
     imageUrl = getProductImage(match.url);
   }
 
@@ -771,6 +850,78 @@ app.get("/api/leads", async (req, res) => {
   }
 });
 
+// ─── Template CRUD API ───
+
+// Get all templates
+app.get("/api/templates", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM message_templates ORDER BY id");
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Update a template
+app.post("/api/templates", async (req, res) => {
+  try {
+    const { template_key, template_text } = req.body;
+    if (!template_key || !template_text) return res.status(400).json({ error: "template_key and template_text required" });
+    await pool.query(
+      "UPDATE message_templates SET template_text = $1, updated_at = NOW() WHERE template_key = $2",
+      [template_text, template_key]
+    );
+    await loadTemplates();
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Product Keywords CRUD API ───
+
+// Get all products with keywords
+app.get("/api/keywords", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM product_keywords ORDER BY sort_order ASC, id ASC");
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Add a new product with keywords
+app.post("/api/keywords", async (req, res) => {
+  try {
+    const { product_name, url_slug, keywords, sort_order, is_fallback } = req.body;
+    if (!product_name || !url_slug) return res.status(400).json({ error: "product_name and url_slug required" });
+    const kws = Array.isArray(keywords) ? keywords : (keywords || "").split(",").map(k => k.trim()).filter(Boolean);
+    await pool.query(
+      "INSERT INTO product_keywords (product_name, url_slug, keywords, sort_order, is_fallback) VALUES ($1, $2, $3, $4, $5)",
+      [product_name, url_slug, kws, sort_order || 100, is_fallback || false]
+    );
+    await loadProducts();
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Update a product's keywords
+app.put("/api/keywords/:id", async (req, res) => {
+  try {
+    const { product_name, url_slug, keywords, sort_order, is_fallback } = req.body;
+    const kws = Array.isArray(keywords) ? keywords : (keywords || "").split(",").map(k => k.trim()).filter(Boolean);
+    await pool.query(
+      "UPDATE product_keywords SET product_name = $1, url_slug = $2, keywords = $3, sort_order = $4, is_fallback = $5, updated_at = NOW() WHERE id = $6",
+      [product_name, url_slug, kws, sort_order || 100, is_fallback || false, req.params.id]
+    );
+    await loadProducts();
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delete a product
+app.delete("/api/keywords/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM product_keywords WHERE id = $1", [req.params.id]);
+    await loadProducts();
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Format any date/timestamp to IST for display on dashboard
 function toIST(dateVal) {
   if (!dateVal) return "";
@@ -911,6 +1062,37 @@ app.get("/", async (req, res) => {
     .wa-error { color: #dc2626; font-size: 11px; }
     .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
     .wa-web-btn:hover { background: #1da851; }
+
+    /* Settings sections */
+    .settings-section { margin-top: 40px; padding: 24px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .settings-section h2 { font-size: 18px; color: #1e293b; margin-bottom: 6px; }
+    .settings-section .desc { color: #64748b; font-size: 13px; margin-bottom: 16px; }
+    .tmpl-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+    .tmpl-card label { font-weight: 600; font-size: 14px; color: #334155; display: block; margin-bottom: 4px; }
+    .tmpl-card .tmpl-desc { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+    .tmpl-card textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-family: monospace; font-size: 13px; resize: vertical; }
+    .tmpl-card .placeholders { font-size: 11px; color: #94a3b8; margin-top: 6px; }
+    .tmpl-card .placeholders code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; }
+    .btn { padding: 8px 20px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-success { background: #16a34a; color: white; }
+    .btn-success:hover { background: #15803d; }
+    .btn-sm { padding: 4px 12px; font-size: 12px; }
+    .kw-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    .kw-table th, .kw-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+    .kw-table th { background: #f8fafc; color: #475569; font-weight: 600; }
+    .kw-tag { display: inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin: 1px 2px; }
+    .kw-fallback { background: #fef3c7; color: #92400e; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+    .kw-url { color: #2563eb; font-size: 12px; }
+    .add-form { border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-top: 14px; display: none; }
+    .add-form .form-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .add-form input, .add-form select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+    .add-form input[type="text"] { flex: 1; min-width: 150px; }
+    .add-form input[type="number"] { width: 80px; }
+    .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 24px; background: #16a34a; color: white; border-radius: 8px; font-weight: 600; font-size: 14px; display: none; z-index: 1000; }
   </style>
 </head>
 <body>
@@ -947,6 +1129,136 @@ app.get("/", async (req, res) => {
 
     </tbody>
   </table>
+
+  <!-- ─── MESSAGE TEMPLATES SECTION ─── -->
+  <div class="settings-section">
+    <h2>Message Templates</h2>
+    <p class="desc">WhatsApp message templates — placeholders: <code>{product_name}</code> <code>{url}</code> <code>{sender_name}</code></p>
+    <div id="templates-container">Loading...</div>
+  </div>
+
+  <!-- ─── PRODUCT KEYWORDS SECTION ─── -->
+  <div class="settings-section">
+    <h2>Product Keywords</h2>
+    <p class="desc">Description mein ye keywords match hone par uss product ka link bhejega. URL automatically banta hai slug se.</p>
+    <button class="btn btn-success" onclick="document.getElementById('add-kw-form').style.display='block'">+ Add Product</button>
+    <div id="add-kw-form" class="add-form">
+      <div class="form-row">
+        <input type="text" id="new-name" placeholder="Product Name (e.g. Oversize 210gsm)">
+        <input type="text" id="new-slug" placeholder="URL Slug (e.g. oversize-210gsm)">
+      </div>
+      <div class="form-row">
+        <input type="text" id="new-keywords" placeholder="Keywords comma separated (e.g. oversize 210, 210gsm oversize)">
+        <input type="number" id="new-order" placeholder="Order" value="100">
+        <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="new-fallback"> Fallback</label>
+      </div>
+      <button class="btn btn-primary" onclick="addKeyword()">Save</button>
+      <button class="btn" style="background:#e2e8f0" onclick="document.getElementById('add-kw-form').style.display='none'">Cancel</button>
+    </div>
+    <table class="kw-table">
+      <thead><tr><th>Order</th><th>Product</th><th>URL</th><th>Keywords</th><th>Type</th><th>Actions</th></tr></thead>
+      <tbody id="kw-tbody">Loading...</tbody>
+    </table>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function showToast(msg, ok) {
+      var t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.background = ok ? '#16a34a' : '#dc2626';
+      t.style.display = 'block';
+      setTimeout(function() { t.style.display = 'none'; }, 2000);
+    }
+
+    // ─── TEMPLATES ───
+    function loadTemplates() {
+      fetch('/api/templates').then(function(r) { return r.json(); }).then(function(data) {
+        var c = document.getElementById('templates-container');
+        c.innerHTML = '';
+        data.forEach(function(t) {
+          var div = document.createElement('div');
+          div.className = 'tmpl-card';
+          div.innerHTML = '<label>' + t.template_key + '</label>' +
+            '<div class="tmpl-desc">' + (t.description || '') + '</div>' +
+            '<textarea id="tmpl-' + t.template_key + '">' + t.template_text + '</textarea>' +
+            '<div class="placeholders">Placeholders: <code>{product_name}</code> <code>{url}</code> <code>{sender_name}</code></div>' +
+            '<br><button class="btn btn-primary btn-sm" onclick="saveTemplate(\\'' + t.template_key + '\\')">Save Template</button>';
+          c.appendChild(div);
+        });
+      });
+    }
+
+    function saveTemplate(key) {
+      var text = document.getElementById('tmpl-' + key).value;
+      fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template_key: key, template_text: text })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        showToast(d.status === 'ok' ? 'Template saved!' : 'Error: ' + d.error, d.status === 'ok');
+      });
+    }
+
+    // ─── KEYWORDS ───
+    function loadKeywords() {
+      fetch('/api/keywords').then(function(r) { return r.json(); }).then(function(data) {
+        var tbody = document.getElementById('kw-tbody');
+        tbody.innerHTML = '';
+        data.forEach(function(p) {
+          var kwTags = (p.keywords || []).map(function(k) { return '<span class="kw-tag">' + k + '</span>'; }).join(' ');
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + p.sort_order + '</td>' +
+            '<td><strong>' + p.product_name + '</strong></td>' +
+            '<td><span class="kw-url">sale91.com/catalog/p/' + p.url_slug + '/</span></td>' +
+            '<td>' + kwTags + '</td>' +
+            '<td>' + (p.is_fallback ? '<span class="kw-fallback">Fallback</span>' : 'Specific') + '</td>' +
+            '<td><button class="btn btn-danger btn-sm" onclick="deleteKeyword(' + p.id + ')">Delete</button></td>';
+          tbody.appendChild(tr);
+        });
+      });
+    }
+
+    function addKeyword() {
+      var name = document.getElementById('new-name').value.trim();
+      var slug = document.getElementById('new-slug').value.trim();
+      var kws = document.getElementById('new-keywords').value.trim();
+      var order = parseInt(document.getElementById('new-order').value) || 100;
+      var fallback = document.getElementById('new-fallback').checked;
+      if (!name || !slug || !kws) { showToast('Fill all fields!', false); return; }
+      fetch('/api/keywords', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_name: name, url_slug: slug, keywords: kws.split(',').map(function(k){return k.trim();}), sort_order: order, is_fallback: fallback })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.status === 'ok') {
+          showToast('Product added!', true);
+          document.getElementById('add-kw-form').style.display = 'none';
+          document.getElementById('new-name').value = '';
+          document.getElementById('new-slug').value = '';
+          document.getElementById('new-keywords').value = '';
+          document.getElementById('new-order').value = '100';
+          document.getElementById('new-fallback').checked = false;
+          loadKeywords();
+        } else { showToast('Error: ' + d.error, false); }
+      });
+    }
+
+    function deleteKeyword(id) {
+      if (!confirm('Delete this product?')) return;
+      fetch('/api/keywords/' + id, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          showToast(d.status === 'ok' ? 'Deleted!' : 'Error', d.status === 'ok');
+          loadKeywords();
+        });
+    }
+
+    // Load on page ready
+    loadTemplates();
+    loadKeywords();
+  </script>
 </body>
 </html>`);
   } catch (err) {
