@@ -409,7 +409,7 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
         components,
       },
     };
-    console.log(`[WhatsApp] Sending template "${templateParams.name}" to ${cleanPhone} with body: ${JSON.stringify(templateParams.bodyParams)}, button URL: ${templateParams.buttonUrlSuffix || "none"}`);
+    console.log(`[WhatsApp] Sending template payload:`, JSON.stringify(payload, null, 2));
   } else if (imageUrl) {
     // Image message with caption — only works within 24-hour conversation window
     payload = {
@@ -466,7 +466,7 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
                 resolve({ status: "failed", error: "No message ID returned by API" });
               } else {
                 console.log(`[WhatsApp] Sent to ${cleanPhone}: OK (wamid: ${wamid})`);
-                resolve({ status: "sent", wamid });
+                resolve({ status: "sent", wamid, payload_sent: payload });
               }
             }
           } catch (e) {
@@ -588,6 +588,7 @@ async function autoReplyToLead(lead) {
   } catch (e) {
     console.error("[WhatsApp] Failed to update status in DB:", e.message);
   }
+  return result;
 }
 
 // Store last webhook payloads for debugging (keep last 10)
@@ -1001,7 +1002,7 @@ app.get("/api/test-lead", async (req, res) => {
     await insertLeads([lead]);
 
     // Send WhatsApp (wait for result, don't fire-and-forget)
-    await autoReplyToLead(lead);
+    const waResult = await autoReplyToLead(lead);
 
     // Fetch the result from DB
     const { rows } = await pool.query(
@@ -1019,6 +1020,7 @@ app.get("/api/test-lead", async (req, res) => {
       whatsapp_wamid: result.whatsapp_wamid,
       whatsapp_error: result.whatsapp_error,
       message_sent: result.whatsapp_message,
+      payload_sent: waResult && waResult.payload_sent ? JSON.parse(waResult.payload_sent) : null,
       note: "Check your WhatsApp — message aana chahiye!",
     });
   } catch (err) {
@@ -1035,9 +1037,34 @@ app.get("/api/debug-send", async (req, res) => {
   if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set" });
 
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
-  const mode = req.query.mode || "text"; // ?mode=image to test image
+  const mode = req.query.mode || "text"; // ?mode=image|template to test
   let payload;
-  if (mode === "image") {
+  if (mode === "template") {
+    const templateName = req.query.template || process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
+    const productName = req.query.product || "Oversize T-Shirt";
+    const slug = req.query.slug || "oversize-210gsm";
+    const headerImage = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+    const components = [];
+    if (req.query.no_header === undefined) {
+      components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImage } }] });
+    }
+    components.push({ type: "body", parameters: [{ type: "text", text: productName }] });
+    if (req.query.no_button === undefined) {
+      components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `p/${slug}` }] });
+    }
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en" },
+        components,
+      },
+    });
+    // Log what we're sending for easy debugging
+    console.log("[Debug] Template payload:", payload);
+  } else if (mode === "image") {
     const imgUrl = req.query.image || "https://www.bulkplaintshirt.com/catalog/images/biowash-round-neck/m.webp";
     payload = JSON.stringify({
       messaging_product: "whatsapp",
@@ -1082,6 +1109,40 @@ app.get("/api/debug-send", async (req, res) => {
     });
 
     res.json({ phone: cleanPhone, phone_id: phoneId, result });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// Debug: Fetch template JSON from Meta Graph API
+// Usage: /debug/template?name=indiamart2&waba_id=YOUR_WABA_ID
+app.get("/debug/template", async (req, res) => {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const wabaId = req.query.waba_id || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  const templateName = req.query.name || "indiamart2";
+
+  if (!token) return res.json({ error: "WHATSAPP_ACCESS_TOKEN not set" });
+  if (!wabaId) return res.json({ error: "Pass ?waba_id=YOUR_WABA_ID or set WHATSAPP_BUSINESS_ACCOUNT_ID env var. Find it in Meta Business Manager → WhatsApp → Settings" });
+
+  try {
+    const result = await new Promise((resolve) => {
+      const r = https.request({
+        hostname: "graph.facebook.com",
+        path: `/v24.0/${wabaId}/message_templates?name=${encodeURIComponent(templateName)}`,
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }, (resp) => {
+        let data = "";
+        resp.on("data", (chunk) => (data += chunk));
+        resp.on("end", () => {
+          resolve({ http_status: resp.statusCode, body: (() => { try { return JSON.parse(data); } catch(e) { return data; } })() });
+        });
+      });
+      r.setTimeout(15000, () => { r.destroy(); resolve({ error: "Timeout 15s" }); });
+      r.on("error", (err) => resolve({ error: err.message }));
+      r.end();
+    });
+    res.json(result);
   } catch (err) {
     res.json({ error: err.message });
   }
