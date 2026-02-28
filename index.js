@@ -224,7 +224,7 @@ function sendWhatsApp(phone, messageText) {
     messaging_product: "whatsapp",
     to: cleanPhone,
     type: "text",
-    text: { body: messageText },
+    text: { preview_url: true, body: messageText },
   });
 
   return new Promise((resolve) => {
@@ -819,9 +819,11 @@ app.get("/", async (req, res) => {
             waLink = '<br><a href="https://wa.me/' + waNum + '" target="_blank" class="wa-web-btn">Follow Up</a>';
           }
 
+          // WhatsApp message sent (truncated for display)
+          const waMsg = r.whatsapp_message ? `<br><small class="wa-msg">${esc((r.whatsapp_message || "").substring(0, 100))}</small>` : "";
+
           return `
       <tr>
-        <td>${esc(r.unique_query_id)}</td>
         <td>${esc(r.sender_name)}</td>
         <td>${esc(r.sender_mobile)}${r.sender_mobile_alt ? "<br><small>" + esc(r.sender_mobile_alt) + "</small>" : ""}</td>
         <td>${esc(r.sender_company)}</td>
@@ -829,7 +831,7 @@ app.get("/", async (req, res) => {
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
-        <td>${waBadge}${waDetails}${waLink}</td>
+        <td>${waBadge}${waDetails}${waMsg}${waLink}</td>
       </tr>`;
         }
       )
@@ -895,12 +897,12 @@ app.get("/", async (req, res) => {
   <table>
     <thead>
       <tr>
-        <th>Query ID</th><th>Name</th><th>Mobile</th>
+        <th>Name</th><th>Mobile</th>
         <th>Company</th><th>City</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
       </tr>
     </thead>
     <tbody>
-      ${tableRows || '<tr><td colspan="9" class="empty">No leads yet. Waiting for IndiaMART to push data...</td></tr>'}
+      ${tableRows || '<tr><td colspan="8" class="empty">No leads yet. Waiting for IndiaMART to push data...</td></tr>'}
 
     </tbody>
   </table>
