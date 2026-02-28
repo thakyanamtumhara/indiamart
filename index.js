@@ -703,14 +703,14 @@ app.get("/", async (req, res) => {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
           }
 
-          // WhatsApp link — opens native WhatsApp app with pre-filled message
+          // WhatsApp link — opens bun-webb app to verify & chat
           let waLink = "";
           if (r.sender_mobile) {
             const cleanNum = (r.sender_mobile || "").replace(/[\s+\-()]/g, "");
             const waNum = cleanNum.startsWith("91") ? cleanNum : "91" + cleanNum;
             const waText = r.whatsapp_message || ("You enquired for *" + (r.query_product_name || "our products") + "*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.");
             const encoded = encodeURIComponent(waText);
-            waLink = '<br><a href="https://api.whatsapp.com/send?phone=' + waNum + '&text=' + encoded + '" target="_blank" class="wa-web-btn">Chat on WhatsApp</a>';
+            waLink = '<br><a href="https://bun-webb-production.up.railway.app/send?phone=' + waNum + '&text=' + encoded + '" target="_blank" class="wa-web-btn">Chat on WhatsApp</a>';
           }
 
           return `
