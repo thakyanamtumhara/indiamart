@@ -340,28 +340,35 @@ app.get("/debug/last-webhook", (req, res) => {
   });
 });
 
-// IndiaMART Pull API — fetch leads periodically as backup
-function fetchLeadsFromAPI() {
+// Date formatter for IndiaMART API (IST timezone)
+function fmtIST(d) {
+  // Convert to IST string (UTC+5:30)
+  const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
+  return ist.getUTCFullYear() + "-" +
+    String(ist.getUTCMonth() + 1).padStart(2, "0") + "-" +
+    String(ist.getUTCDate()).padStart(2, "0") + " " +
+    String(ist.getUTCHours()).padStart(2, "0") + ":" +
+    String(ist.getUTCMinutes()).padStart(2, "0") + ":" +
+    String(ist.getUTCSeconds()).padStart(2, "0");
+}
+
+// IndiaMART Pull API — fetch leads for a given time window
+function fetchLeadsFromAPI(startTime, endTime) {
   const crmKey = process.env.INDIAMART_CRM_KEY;
   if (!crmKey) return Promise.resolve(null);
 
-  const now = new Date();
-  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-  const fmt = (d) =>
-    d.getFullYear() + "-" +
-    String(d.getMonth() + 1).padStart(2, "0") + "-" +
-    String(d.getDate()).padStart(2, "0") + " " +
-    String(d.getHours()).padStart(2, "0") + ":" +
-    String(d.getMinutes()).padStart(2, "0") + ":" +
-    String(d.getSeconds()).padStart(2, "0");
+  const start = startTime || new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const end = endTime || new Date();
 
   const params = new URLSearchParams({
     glusr_crm_key: crmKey,
-    start_time: fmt(twoHoursAgo),
-    end_time: fmt(now),
+    start_time: fmtIST(start),
+    end_time: fmtIST(end),
   });
 
   const url = `https://mapi.indiamart.com/wservce/enquiry/listing/?${params}`;
+  console.log(`[Pull] Fetching leads: ${fmtIST(start)} → ${fmtIST(end)}`);
+  console.log(`[Pull] URL: ${url.replace(crmKey, "***")}`);
 
   return new Promise((resolve) => {
     https.get(url, (resp) => {
@@ -370,20 +377,23 @@ function fetchLeadsFromAPI() {
       resp.on("end", async () => {
         try {
           const json = JSON.parse(data);
+          console.log(`[Pull] Response CODE=${json.CODE}, STATUS=${json.STATUS}`);
 
-          // IndiaMART returns { STATUS: "SUCCESS", RESPONSE: [...leads...] }
-          // or { STATUS: "SUCCESS", CODE: 200, ... } with leads in top-level array
           let leads = [];
           if (Array.isArray(json)) {
-            leads = json;
+            leads = json.map(normalizeLeadFields);
           } else if (json.RESPONSE && Array.isArray(json.RESPONSE)) {
-            leads = json.RESPONSE;
+            leads = json.RESPONSE.map(normalizeLeadFields);
           } else if (json.CODE === 200 && json.STATUS === "SUCCESS") {
-            // No new leads
-            console.log("[Pull] No new leads found");
-            return resolve({ fetched: 0, inserted: 0 });
+            // Single lead in RESPONSE (like Push API format)
+            if (json.RESPONSE && typeof json.RESPONSE === "object") {
+              leads = [normalizeLeadFields(json.RESPONSE)];
+            } else {
+              console.log("[Pull] No new leads found");
+              return resolve({ fetched: 0, inserted: 0 });
+            }
           } else {
-            console.error("[Pull] Unexpected response:", JSON.stringify(json).substring(0, 200));
+            console.error("[Pull] Unexpected response:", JSON.stringify(json).substring(0, 500));
             return resolve(null);
           }
 
@@ -393,10 +403,18 @@ function fetchLeadsFromAPI() {
           }
 
           const inserted = await insertLeads(leads);
+
+          // Auto-reply via WhatsApp for newly inserted leads
+          if (inserted > 0) {
+            for (const l of leads) {
+              autoReplyToLead(l).catch((e) => console.error("[WhatsApp] Auto-reply failed:", e.message));
+            }
+          }
+
           console.log(`[Pull] Fetched ${leads.length} lead(s), inserted ${inserted}`);
           resolve({ fetched: leads.length, inserted });
         } catch (err) {
-          console.error("[Pull] Parse error:", err.message);
+          console.error("[Pull] Parse error:", err.message, "| Raw:", data.substring(0, 300));
           resolve(null);
         }
       });
@@ -407,13 +425,52 @@ function fetchLeadsFromAPI() {
   });
 }
 
+// Fetch leads for multiple days by splitting into day-sized chunks
+// IndiaMART API works best with smaller time windows
+async function fetchLeadsForDays(days) {
+  const now = new Date();
+  let totalFetched = 0;
+  let totalInserted = 0;
+  const results = [];
+
+  for (let i = days; i > 0; i--) {
+    const dayStart = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const dayEnd = new Date(now.getTime() - (i - 1) * 24 * 60 * 60 * 1000);
+    // Last chunk should end at current time
+    if (i === 1) dayEnd.setTime(now.getTime());
+
+    console.log(`[Pull] Fetching day ${days - i + 1}/${days}: ${fmtIST(dayStart)} → ${fmtIST(dayEnd)}`);
+    const result = await fetchLeadsFromAPI(dayStart, dayEnd);
+    if (result) {
+      totalFetched += result.fetched;
+      totalInserted += result.inserted;
+      results.push({ day: fmtIST(dayStart).split(" ")[0], ...result });
+    } else {
+      results.push({ day: fmtIST(dayStart).split(" ")[0], error: "failed" });
+    }
+  }
+
+  return { totalFetched, totalInserted, days: results };
+}
+
 // Manual trigger to fetch leads via Pull API
+// Usage: /api/fetch-leads?days=2 (default: fetch last 2 hours)
 app.get("/api/fetch-leads", async (req, res) => {
   if (!process.env.INDIAMART_CRM_KEY) {
-    return res.status(400).json({ error: "INDIAMART_CRM_KEY not configured" });
+    return res.status(400).json({ error: "INDIAMART_CRM_KEY not configured. Set INDIAMART_CRM_KEY environment variable." });
   }
   try {
-    const result = await fetchLeadsFromAPI();
+    const days = parseInt(req.query.days) || 0;
+    let result;
+    if (days > 0) {
+      // Cap at 7 days (IndiaMART API limit)
+      const cappedDays = Math.min(days, 7);
+      console.log(`[Pull] Manual fetch triggered: last ${cappedDays} days`);
+      result = await fetchLeadsForDays(cappedDays);
+    } else {
+      console.log("[Pull] Manual fetch triggered: last 2 hours");
+      result = await fetchLeadsFromAPI();
+    }
     res.json({ status: "ok", result });
   } catch (err) {
     res.status(500).json({ error: err.message });
