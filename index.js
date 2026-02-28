@@ -409,7 +409,7 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
         components,
       },
     };
-    console.log(`[WhatsApp] Sending template "${templateParams.name}" to ${cleanPhone} with body: ${JSON.stringify(templateParams.bodyParams)}, button URL: ${templateParams.buttonUrlSuffix || "none"}`);
+    console.log(`[WhatsApp] Sending template payload:`, JSON.stringify(payload, null, 2));
   } else if (imageUrl) {
     // Image message with caption — only works within 24-hour conversation window
     payload = {
@@ -466,7 +466,7 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
                 resolve({ status: "failed", error: "No message ID returned by API" });
               } else {
                 console.log(`[WhatsApp] Sent to ${cleanPhone}: OK (wamid: ${wamid})`);
-                resolve({ status: "sent", wamid });
+                resolve({ status: "sent", wamid, payload_sent: payload });
               }
             }
           } catch (e) {
@@ -588,6 +588,7 @@ async function autoReplyToLead(lead) {
   } catch (e) {
     console.error("[WhatsApp] Failed to update status in DB:", e.message);
   }
+  return result;
 }
 
 // Store last webhook payloads for debugging (keep last 10)
@@ -1001,7 +1002,7 @@ app.get("/api/test-lead", async (req, res) => {
     await insertLeads([lead]);
 
     // Send WhatsApp (wait for result, don't fire-and-forget)
-    await autoReplyToLead(lead);
+    const waResult = await autoReplyToLead(lead);
 
     // Fetch the result from DB
     const { rows } = await pool.query(
@@ -1019,6 +1020,7 @@ app.get("/api/test-lead", async (req, res) => {
       whatsapp_wamid: result.whatsapp_wamid,
       whatsapp_error: result.whatsapp_error,
       message_sent: result.whatsapp_message,
+      payload_sent: waResult && waResult.payload_sent ? JSON.parse(waResult.payload_sent) : null,
       note: "Check your WhatsApp — message aana chahiye!",
     });
   } catch (err) {
