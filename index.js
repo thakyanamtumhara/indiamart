@@ -1042,6 +1042,14 @@ app.get("/api/debug-send", async (req, res) => {
     const productName = req.query.product || "Oversize T-Shirt";
     const slug = req.query.slug || "oversize-210gsm";
     const headerImage = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+    const components = [];
+    if (req.query.no_header === undefined) {
+      components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImage } }] });
+    }
+    components.push({ type: "body", parameters: [{ type: "text", text: productName }] });
+    if (req.query.no_button === undefined) {
+      components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `p/${slug}` }] });
+    }
     payload = JSON.stringify({
       messaging_product: "whatsapp",
       to: cleanPhone,
@@ -1049,13 +1057,11 @@ app.get("/api/debug-send", async (req, res) => {
       template: {
         name: templateName,
         language: { code: "en" },
-        components: [
-          { type: "header", parameters: [{ type: "image", image: { link: headerImage } }] },
-          { type: "body", parameters: [{ type: "text", text: productName }] },
-          { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: `p/${slug}` }] },
-        ],
+        components,
       },
     });
+    // Log what we're sending for easy debugging
+    console.log("[Debug] Template payload:", payload);
   } else if (mode === "image") {
     const imgUrl = req.query.image || "https://www.bulkplaintshirt.com/catalog/images/biowash-round-neck/m.webp";
     payload = JSON.stringify({
