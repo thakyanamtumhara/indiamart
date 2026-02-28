@@ -560,7 +560,7 @@ async function autoReplyToLead(lead) {
   const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
   const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
   const productName = match ? match.name : (lead.QUERY_PRODUCT_NAME || "our products");
-  const headerImageUrl = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+  const headerImageUrl = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://raw.githubusercontent.com/thakyanamtumhara/catalog/refs/heads/claude/mobile-catalog-website-k6LP5/images/og-home.png";
   // Button URL: template has "https://www.bulkplaintshirt.com/catalog/{{1}}"
   // Match: "p/oversize-210gsm" → full URL: .../catalog/p/oversize-210gsm
   // No match: "" → full URL: .../catalog/
@@ -1043,7 +1043,7 @@ app.get("/api/debug-send", async (req, res) => {
     const templateName = req.query.template || process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
     const productName = req.query.product || "Oversize T-Shirt";
     const slug = req.query.slug || "oversize-210gsm";
-    const headerImage = req.query.image || process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+    const headerImage = req.query.image || process.env.WHATSAPP_HEADER_IMAGE_URL || "https://raw.githubusercontent.com/thakyanamtumhara/catalog/refs/heads/claude/mobile-catalog-website-k6LP5/images/og-home.png";
     const components = [];
     if (req.query.no_header === undefined) {
       components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImage } }] });
