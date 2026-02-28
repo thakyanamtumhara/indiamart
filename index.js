@@ -123,7 +123,7 @@ async function insertLeads(leads) {
         l.QUERY_TYPE,
         l.QUERY_TIME || null,
         l.SENDER_NAME,
-        cleanPhoneNumber(l.SENDER_MOBILE),
+        cleanPhoneNumber(l.SENDER_MOBILE) || null,
         l.SENDER_EMAIL,
         l.SENDER_COMPANY,
         l.SENDER_ADDRESS,
@@ -190,8 +190,9 @@ function matchProduct(productName, message) {
 
 // Clean phone number: remove +, -, spaces, parens → return "91XXXXXXXXXX"
 function cleanPhoneNumber(phone) {
-  if (!phone) return "";
+  if (!phone) return null;
   const cleaned = phone.replace(/[\s+\-()]/g, "");
+  if (!cleaned) return null;
   if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) return "91" + cleaned;
   if (cleaned.startsWith("91") && cleaned.length === 12) return cleaned;
   return cleaned; // return as-is if format unknown
@@ -270,6 +271,17 @@ function sendWhatsApp(phone, messageText) {
 // Auto-reply to a lead via WhatsApp with matching catalog link
 async function autoReplyToLead(lead) {
   if (!process.env.WHATSAPP_PHONE_NUMBER_ID) return;
+
+  // Skip if already processed (prevents duplicate messages)
+  try {
+    const existing = await pool.query(
+      "SELECT whatsapp_status FROM leads WHERE unique_query_id = $1",
+      [lead.UNIQUE_QUERY_ID]
+    );
+    if (existing.rows.length > 0 && existing.rows[0].whatsapp_status) {
+      return; // already sent/delivered/read/failed — don't re-send
+    }
+  } catch (e) { /* proceed if check fails */ }
 
   const phone = lead.SENDER_MOBILE;
   if (!phone) {
@@ -690,6 +702,12 @@ function toIST(dateVal) {
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
 }
 
+// HTML-escape to prevent XSS from untrusted lead data
+function esc(str) {
+  if (!str) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // Dashboard — simple HTML page to view leads
 app.get("/", async (req, res) => {
   try {
@@ -706,12 +724,12 @@ app.get("/", async (req, res) => {
       .map(
         (r) => `
       <tr>
-        <td>${r.sender_name || ""}</td>
-        <td><a href="tel:${r.sender_mobile || ""}" class="call-btn">${r.sender_mobile || ""}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + r.sender_mobile_alt + '" class="call-btn alt">' + r.sender_mobile_alt + "</a>" : ""}</td>
-        <td>${r.sender_company || ""}</td>
-        <td>${r.sender_city || ""}</td>
-        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
-        <td>${(r.query_message || "").substring(0, 80)}</td>
+        <td>${esc(r.sender_name)}</td>
+        <td><a href="tel:${esc(r.sender_mobile)}" class="call-btn">${esc(r.sender_mobile)}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + esc(r.sender_mobile_alt) + '" class="call-btn alt">' + esc(r.sender_mobile_alt) + "</a>" : ""}</td>
+        <td>${esc(r.sender_company)}</td>
+        <td>${esc(r.sender_city)}</td>
+        <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
+        <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
       </tr>`
       )
@@ -736,7 +754,7 @@ app.get("/", async (req, res) => {
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">Failed</span>';
             if (r.whatsapp_error) {
-              waDetails = `<br><small class="wa-error">${r.whatsapp_error}</small>`;
+              waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
             }
           } else {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
@@ -752,13 +770,13 @@ app.get("/", async (req, res) => {
 
           return `
       <tr>
-        <td>${r.unique_query_id}</td>
-        <td>${r.sender_name || ""}</td>
-        <td>${r.sender_mobile || ""}${r.sender_mobile_alt ? "<br><small>" + r.sender_mobile_alt + "</small>" : ""}</td>
-        <td>${r.sender_company || ""}</td>
-        <td>${r.sender_city || ""}</td>
-        <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
-        <td>${(r.query_message || "").substring(0, 80)}</td>
+        <td>${esc(r.unique_query_id)}</td>
+        <td>${esc(r.sender_name)}</td>
+        <td>${esc(r.sender_mobile)}${r.sender_mobile_alt ? "<br><small>" + esc(r.sender_mobile_alt) + "</small>" : ""}</td>
+        <td>${esc(r.sender_company)}</td>
+        <td>${esc(r.sender_city)}</td>
+        <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
+        <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
         <td>${waBadge}${waDetails}${waLink}</td>
       </tr>`;
