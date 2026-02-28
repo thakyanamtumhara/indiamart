@@ -1078,9 +1078,7 @@ app.get("/api/leads/months", async (req, res) => {
         TO_CHAR(created_at, 'YYYY-MM') AS month_key,
         TO_CHAR(created_at, 'Mon YYYY') AS month_label,
         COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE whatsapp_status IN ('delivered','read')) AS wa_success,
-        COUNT(*) FILTER (WHERE whatsapp_status = 'sent' AND whatsapp_sent_at >= NOW() - INTERVAL '5 minutes') AS wa_sent,
-        COUNT(*) FILTER (WHERE whatsapp_status = 'sent' AND whatsapp_sent_at < NOW() - INTERVAL '5 minutes') AS wa_notdelivered,
+        COUNT(*) FILTER (WHERE whatsapp_status IN ('sent','delivered','read')) AS wa_success,
         COUNT(*) FILTER (WHERE whatsapp_status = 'failed') AS wa_failed,
         COUNT(*) FILTER (WHERE whatsapp_status = 'called') AS wa_called
       FROM leads
@@ -1219,23 +1217,14 @@ app.get("/", async (req, res) => {
     const currentMonthLeads = parseInt(monthResult.rows[0].count);
     const currentMonthName = new Date().toLocaleString("en-IN", { month: "long", year: "numeric" });
 
-    // Leads where WhatsApp failed OR sent but not delivered (>5 min) — need to call directly
+    // Leads where WhatsApp failed — need to call directly
     const { rows: failedRows } = await pool.query(
-      `SELECT *,
-        CASE WHEN whatsapp_status = 'sent' AND whatsapp_sent_at < NOW() - INTERVAL '5 minutes' THEN 'not_delivered' ELSE whatsapp_status END AS display_status
-       FROM leads
-       WHERE whatsapp_status = 'failed'
-          OR (whatsapp_status = 'sent' AND whatsapp_sent_at < NOW() - INTERVAL '5 minutes')
-       ORDER BY created_at DESC LIMIT 50`
+      "SELECT * FROM leads WHERE whatsapp_status = 'failed' ORDER BY created_at DESC LIMIT 50"
     );
 
     const failedTableRows = failedRows
       .map(
-        (r) => {
-          const statusBadge = r.display_status === "not_delivered"
-            ? '<span class="wa-badge wa-notdelivered">&#9888; Not Delivered</span>'
-            : '<span class="wa-badge wa-failed">&#10007; Failed</span>';
-          return `
+        (r) => `
       <tr id="failed-${esc(r.unique_query_id)}">
         <td>${esc(r.sender_name)}</td>
         <td><a href="tel:${esc(r.sender_mobile)}" class="call-btn">${esc(r.sender_mobile)}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + esc(r.sender_mobile_alt) + '" class="call-btn alt">' + esc(r.sender_mobile_alt) + "</a>" : ""}</td>
@@ -1243,10 +1232,9 @@ app.get("/", async (req, res) => {
         <td>${esc(r.sender_city)}</td>
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
-        <td>${statusBadge}<br><small>${toIST(r.query_time)}</small></td>
+        <td>${toIST(r.query_time)}</td>
         <td><button class="btn btn-success btn-sm done-btn" onclick="markCalled('${esc(r.unique_query_id)}')">Done</button></td>
-      </tr>`;
-        }
+      </tr>`
       )
       .join("");
 
@@ -1264,15 +1252,8 @@ app.get("/", async (req, res) => {
             waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
             if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "sent") {
-            // If sent > 5 min ago but no delivery confirmation → "Not Delivered" warning
-            const sentAgo = r.whatsapp_sent_at ? (Date.now() - new Date(r.whatsapp_sent_at).getTime()) : 0;
-            if (sentAgo > 5 * 60 * 1000) {
-              waBadge = '<span class="wa-badge wa-notdelivered">&#9888; Not Delivered</span>';
-              if (r.whatsapp_sent_at) waDetails = `<br><small>Sent ${toIST(r.whatsapp_sent_at)}</small>`;
-            } else {
-              waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
-              if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
-            }
+            waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
+            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
             if (r.whatsapp_error) {
@@ -1336,8 +1317,8 @@ app.get("/", async (req, res) => {
     .call-btn.alt { background: #6b7280; }
     .call-btn:hover { opacity: 0.85; }
     .failed-section { margin-bottom: 30px; }
-    .failed-section h2 { color: #ea580c; margin-bottom: 10px; }
-    .failed-section table th { background: #ea580c; }
+    .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
+    .failed-section table th { background: #dc2626; }
     .done-btn { white-space: nowrap; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
     .lead-type { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; white-space: nowrap; }
@@ -1354,7 +1335,6 @@ app.get("/", async (req, res) => {
     .wa-read .wa-ticks { color: #53bdeb; }
     .wa-read .wa-label { color: #53bdeb; }
     .wa-failed { color: #dc2626; }
-    .wa-notdelivered { color: #ea580c; font-weight: 700; }
     .wa-called { color: #16a34a; font-weight: 700; }
     .wa-pending { color: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
@@ -1408,7 +1388,6 @@ app.get("/", async (req, res) => {
     .month-card .month-stats { font-size: 11px; color: #64748b; }
     .month-card .month-stats span { margin-right: 8px; }
     .month-card .stat-ok { color: #16a34a; }
-    .month-card .stat-notdel { color: #ea580c; font-weight: 700; }
     .month-card .stat-fail { color: #dc2626; }
     .month-card .stat-call { color: #b45309; }
     .month-leads-container { margin-top: 16px; }
@@ -1433,7 +1412,7 @@ app.get("/", async (req, res) => {
 
   ${failedRows.length > 0 ? `
   <div class="failed-section">
-    <h2>&#9888; Failed / Not Delivered — Call Karo <span class="badge">${failedRows.length}</span></h2>
+    <h2>WhatsApp Failed — Call Karo <span class="badge">${failedRows.length}</span></h2>
     <p class="stats">In logon ka WhatsApp nahi hai, directly call karo</p>
     <table>
       <thead>
@@ -1526,8 +1505,7 @@ app.get("/", async (req, res) => {
           card.innerHTML = '<div class="month-name">' + m.month_label + '</div>' +
             '<div class="month-total">' + m.total + ' Leads</div>' +
             '<div class="month-stats">' +
-              '<span class="stat-ok">Delivered: ' + m.wa_success + '</span>' +
-              (parseInt(m.wa_notdelivered) > 0 ? '<span class="stat-notdel">Not Delivered: ' + m.wa_notdelivered + '</span>' : '') +
+              '<span class="stat-ok">WA: ' + m.wa_success + '</span>' +
               '<span class="stat-fail">Failed: ' + m.wa_failed + '</span>' +
               '<span class="stat-call">Called: ' + m.wa_called + '</span>' +
             '</div>';
@@ -1559,14 +1537,7 @@ app.get("/", async (req, res) => {
           var waBadge = '';
           if (r.whatsapp_status === 'read') waBadge = '<span class="wa-badge wa-read"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Read</span></span>';
           else if (r.whatsapp_status === 'delivered') waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
-          else if (r.whatsapp_status === 'sent') {
-            var sentAgo = r.whatsapp_sent_at ? (Date.now() - new Date(r.whatsapp_sent_at).getTime()) : 0;
-            if (sentAgo > 5 * 60 * 1000) {
-              waBadge = '<span class="wa-badge wa-notdelivered">&#9888; Not Delivered</span>';
-            } else {
-              waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
-            }
-          }
+          else if (r.whatsapp_status === 'sent') waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
           else if (r.whatsapp_status === 'failed') waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
           else if (r.whatsapp_status === 'called') waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
           else waBadge = '<span class="wa-badge wa-pending">—</span>';
