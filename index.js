@@ -150,6 +150,25 @@ async function initDB() {
     WHERE sender_mobile ~ '^[6-9][0-9]{9}$'
   `);
 
+  // Fix query_time timezone: stored IST times were treated as UTC, shift back by 5:30
+  // Only runs once — checks if column is still TIMESTAMP (not TIMESTAMPTZ)
+  const colCheck = await pool.query(`
+    SELECT data_type FROM information_schema.columns
+    WHERE table_name = 'leads' AND column_name = 'query_time'
+  `);
+  if (colCheck.rows.length && colCheck.rows[0].data_type === 'timestamp without time zone') {
+    console.log("[Migration] Fixing query_time timezone (IST→UTC)...");
+    await pool.query(`
+      UPDATE leads
+      SET query_time = query_time - INTERVAL '5 hours 30 minutes'
+      WHERE query_time IS NOT NULL
+    `);
+    await pool.query(`
+      ALTER TABLE leads ALTER COLUMN query_time TYPE TIMESTAMPTZ USING query_time AT TIME ZONE 'UTC'
+    `);
+    console.log("[Migration] query_time timezone fixed.");
+  }
+
   // Reset leads that were wrongly marked as "failed" due to phone formatting
   // These have valid cleaned numbers now, so retry them
   await pool.query(`
@@ -203,7 +222,7 @@ async function insertLeads(leads) {
       [
         l.UNIQUE_QUERY_ID,
         l.QUERY_TYPE,
-        l.QUERY_TIME || null,
+        parseISTTime(l.QUERY_TIME),
         l.SENDER_NAME,
         cleanPhoneNumber(l.SENDER_MOBILE) || null,
         l.SENDER_EMAIL,
@@ -267,6 +286,17 @@ function matchProduct(productName, message) {
     return { name: bestMatch.product_name, url: `${CATALOG_BASE}/${bestMatch.url_slug}/` };
   }
   return null; // no match — send full catalog
+}
+
+// Parse IndiaMART QUERY_TIME (IST) correctly — avoid double timezone shift
+// IndiaMART sends time in IST without timezone info, so we mark it as IST (+05:30)
+function parseISTTime(timeStr) {
+  if (!timeStr) return null;
+  const str = String(timeStr).trim();
+  // If already has timezone info (ISO format with Z or +), return as-is
+  if (/[Z+]/.test(str.slice(-6))) return str;
+  // Append IST offset so JS/Postgres treats it correctly
+  return str + "+05:30";
 }
 
 // Clean phone number: remove +, -, spaces, parens → return "91XXXXXXXXXX"
