@@ -1043,7 +1043,7 @@ app.get("/api/debug-send", async (req, res) => {
     const templateName = req.query.template || process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
     const productName = req.query.product || "Oversize T-Shirt";
     const slug = req.query.slug || "oversize-210gsm";
-    const headerImage = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+    const headerImage = req.query.image || process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
     const components = [];
     if (req.query.no_header === undefined) {
       components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImage } }] });
