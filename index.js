@@ -928,12 +928,24 @@ app.get("/api/debug-send", async (req, res) => {
   if (!phoneId || !token) return res.json({ error: "WhatsApp env vars not set" });
 
   const cleanPhone = phone.replace(/[\s+\-()]/g, "");
-  const payload = JSON.stringify({
-    messaging_product: "whatsapp",
-    to: cleanPhone,
-    type: "text",
-    text: { body: "Debug test — agar ye message aaya toh WhatsApp API kaam kar rahi hai." },
-  });
+  const mode = req.query.mode || "text"; // ?mode=image to test image
+  let payload;
+  if (mode === "image") {
+    const imgUrl = req.query.image || "https://www.bulkplaintshirt.com/catalog/images/biowash-round-neck/m.webp";
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "image",
+      image: { link: imgUrl, caption: "Debug image test — agar ye photo aaya toh image sending kaam kar rahi hai." },
+    });
+  } else {
+    payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: cleanPhone,
+      type: "text",
+      text: { body: "Debug test — agar ye message aaya toh WhatsApp API kaam kar rahi hai." },
+    });
+  }
 
   try {
     const result = await new Promise((resolve) => {
