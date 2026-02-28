@@ -556,13 +556,15 @@ async function autoReplyToLead(lead) {
   }
 
   // Use template message for business-initiated conversations (first contact)
-  // Template: indiamart_template — body {{1}}=product name, button URL {{1}}=product slug
-  const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart_template";
+  // Template: indiamart2 — body {{1}}=product name, button URL {{1}}=path after /catalog/
+  const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart2";
   const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
   const productName = match ? match.name : (lead.QUERY_PRODUCT_NAME || "our products");
   const headerImageUrl = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
-  // Button URL: template has "https://www.bulkplaintshirt.com/catalog/p/{{1}}", so send just the slug
-  const buttonUrlSuffix = match ? match.slug : "";
+  // Button URL: template has "https://www.bulkplaintshirt.com/catalog/{{1}}"
+  // Match: "p/oversize-210gsm" → full URL: .../catalog/p/oversize-210gsm
+  // No match: "" → full URL: .../catalog/
+  const buttonUrlSuffix = match ? `p/${match.slug}` : "";
 
   const templateParams = {
     name: templateName,
