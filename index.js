@@ -48,6 +48,8 @@ async function initDB() {
     "whatsapp_status VARCHAR(20)",
     "whatsapp_message TEXT",
     "whatsapp_sent_at TIMESTAMP",
+    "whatsapp_error TEXT",
+    "whatsapp_wamid VARCHAR(255)",
   ];
   for (const col of newColumns) {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
@@ -142,6 +144,19 @@ function matchProduct(productName, message) {
   return null; // no match — send full catalog
 }
 
+// Validate Indian mobile number — must be 10 digits starting with 6-9
+function isValidIndianMobile(phone) {
+  if (!phone) return false;
+  const cleaned = phone.replace(/[\s+\-()]/g, "");
+  // Remove country code 91 if present
+  const digits = cleaned.startsWith("91") && cleaned.length > 10 ? cleaned.substring(2) : cleaned;
+  // Indian mobile: 10 digits, starts with 6-9, not all same digit
+  if (!/^[6-9]\d{9}$/.test(digits)) return false;
+  // Reject obviously fake numbers (all same digit like 9999999999)
+  if (/^(\d)\1{9}$/.test(digits)) return false;
+  return true;
+}
+
 // Send WhatsApp message via WhatsApp Business API
 function sendWhatsApp(phone, messageText) {
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -179,8 +194,9 @@ function sendWhatsApp(phone, messageText) {
               console.error(`[WhatsApp] Failed for ${cleanPhone}: ${json.error.message}`);
               resolve({ status: "failed", error: json.error.message });
             } else {
-              console.log(`[WhatsApp] Sent to ${cleanPhone}: OK`);
-              resolve({ status: "sent" });
+              const wamid = json.messages && json.messages[0] ? json.messages[0].id : null;
+              console.log(`[WhatsApp] Sent to ${cleanPhone}: OK (wamid: ${wamid})`);
+              resolve({ status: "sent", wamid });
             }
           } catch (e) {
             console.error("[WhatsApp] Parse error:", e.message);
@@ -203,10 +219,30 @@ async function autoReplyToLead(lead) {
   if (!process.env.WHATSAPP_PHONE_NUMBER_ID) return;
 
   const phone = lead.SENDER_MOBILE;
-  if (!phone) return;
+  if (!phone) {
+    console.log(`[WhatsApp] No phone number for lead ${lead.UNIQUE_QUERY_ID}`);
+    try {
+      await pool.query(
+        "UPDATE leads SET whatsapp_status = $1, whatsapp_error = $2 WHERE unique_query_id = $3",
+        ["failed", "No phone number", lead.UNIQUE_QUERY_ID]
+      );
+    } catch (e) { /* ignore */ }
+    return;
+  }
+
+  // Validate phone number before sending
+  if (!isValidIndianMobile(phone)) {
+    console.log(`[WhatsApp] Invalid phone number: ${phone} — skipping`);
+    try {
+      await pool.query(
+        "UPDATE leads SET whatsapp_status = $1, whatsapp_error = $2 WHERE unique_query_id = $3",
+        ["failed", "Invalid number: " + phone, lead.UNIQUE_QUERY_ID]
+      );
+    } catch (e) { /* ignore */ }
+    return;
+  }
 
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
-  const buyerName = lead.SENDER_NAME || "there";
 
   let msg;
   if (!match) {
@@ -218,12 +254,14 @@ async function autoReplyToLead(lead) {
 
   const result = await sendWhatsApp(phone, msg);
   const waStatus = result ? result.status : "failed";
+  const waError = result && result.error ? result.error : null;
+  const waWamid = result && result.wamid ? result.wamid : null;
 
-  // Save WhatsApp delivery status, message text, and sent time in DB
+  // Save WhatsApp delivery status, message text, sent time, wamid, and error in DB
   try {
     await pool.query(
-      "UPDATE leads SET whatsapp_status = $1, whatsapp_message = $2, whatsapp_sent_at = $3 WHERE unique_query_id = $4",
-      [waStatus, msg, new Date().toISOString(), lead.UNIQUE_QUERY_ID]
+      "UPDATE leads SET whatsapp_status = $1, whatsapp_message = $2, whatsapp_sent_at = $3, whatsapp_error = $4, whatsapp_wamid = $5 WHERE unique_query_id = $6",
+      [waStatus, msg, waStatus === "sent" ? new Date().toISOString() : null, waError, waWamid, lead.UNIQUE_QUERY_ID]
     );
   } catch (e) {
     console.error("[WhatsApp] Failed to update status in DB:", e.message);
@@ -340,6 +378,93 @@ app.get("/debug/last-webhook", (req, res) => {
   });
 });
 
+// WhatsApp Webhook — verification (GET) for Meta setup
+app.get("/webhook/whatsapp", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || "indiamart-leads-verify";
+
+  if (mode === "subscribe" && token === verifyToken) {
+    console.log("[WA Webhook] Verified successfully");
+    return res.status(200).send(challenge);
+  }
+  console.error("[WA Webhook] Verification failed");
+  res.sendStatus(403);
+});
+
+// WhatsApp Webhook — receive status updates (POST) from Meta
+app.post("/webhook/whatsapp", async (req, res) => {
+  // Always return 200 quickly
+  res.sendStatus(200);
+
+  try {
+    const body = req.body;
+    if (!body.entry) return;
+
+    for (const entry of body.entry) {
+      const changes = entry.changes || [];
+      for (const change of changes) {
+        const value = change.value || {};
+
+        // Status updates (sent → delivered → read → failed)
+        const statuses = value.statuses || [];
+        for (const s of statuses) {
+          const wamid = s.id;
+          const status = s.status; // sent, delivered, read, failed
+          const recipientPhone = s.recipient_id;
+          const timestamp = s.timestamp ? new Date(parseInt(s.timestamp) * 1000).toISOString() : new Date().toISOString();
+
+          console.log(`[WA Webhook] Status: ${status} for ${recipientPhone} (wamid: ${wamid})`);
+
+          // Update lead status by wamid — only upgrade status (don't downgrade read→delivered)
+          const statusOrder = { sent: 1, delivered: 2, read: 3, failed: 0 };
+          const newStatus = status;
+
+          try {
+            // Only update if new status is higher priority (or it's a failure)
+            if (status === "failed") {
+              const errorInfo = s.errors && s.errors[0] ? s.errors[0].title : "Unknown error";
+              await pool.query(
+                "UPDATE leads SET whatsapp_status = $1, whatsapp_error = $2 WHERE whatsapp_wamid = $3",
+                ["failed", errorInfo, wamid]
+              );
+            } else {
+              // Upgrade: sent → delivered → read
+              const result = await pool.query(
+                `UPDATE leads SET whatsapp_status = $1
+                 WHERE whatsapp_wamid = $2
+                 AND (
+                   whatsapp_status IS NULL
+                   OR whatsapp_status = 'sent'
+                   OR ($1 = 'read' AND whatsapp_status = 'delivered')
+                 )`,
+                [newStatus, wamid]
+              );
+              if (result.rowCount > 0) {
+                console.log(`[WA Webhook] Updated lead status to '${status}' for wamid ${wamid}`);
+              }
+            }
+          } catch (e) {
+            console.error("[WA Webhook] DB update error:", e.message);
+          }
+        }
+
+        // Incoming messages from buyers (optional — log them)
+        const messages = value.messages || [];
+        for (const m of messages) {
+          const from = m.from;
+          const text = m.text ? m.text.body : "(media/other)";
+          console.log(`[WA Webhook] Incoming from ${from}: ${text}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[WA Webhook] Error:", err.message);
+  }
+});
+
 // Date formatter for IndiaMART API (IST timezone)
 function fmtIST(d) {
   // Convert to IST string (UTC+5:30)
@@ -355,7 +480,7 @@ function fmtIST(d) {
 // IndiaMART Pull API — fetch leads for a given time window
 function fetchLeadsFromAPI(startTime, endTime) {
   const crmKey = process.env.INDIAMART_CRM_KEY;
-  if (!crmKey) return Promise.resolve(null);
+  if (!crmKey) return Promise.resolve({ fetched: 0, inserted: 0, error: "INDIAMART_CRM_KEY not set in environment" });
 
   const start = startTime || new Date(Date.now() - 2 * 60 * 60 * 1000);
   const end = endTime || new Date();
@@ -393,8 +518,9 @@ function fetchLeadsFromAPI(startTime, endTime) {
               return resolve({ fetched: 0, inserted: 0 });
             }
           } else {
-            console.error("[Pull] Unexpected response:", JSON.stringify(json).substring(0, 500));
-            return resolve(null);
+            const detail = JSON.stringify(json).substring(0, 500);
+            console.error("[Pull] Unexpected response:", detail);
+            return resolve({ fetched: 0, inserted: 0, error: `API error: CODE=${json.CODE}, STATUS=${json.STATUS}, MSG=${json.MESSAGE || json.message || detail.substring(0, 200)}` });
           }
 
           if (leads.length === 0) {
@@ -415,12 +541,12 @@ function fetchLeadsFromAPI(startTime, endTime) {
           resolve({ fetched: leads.length, inserted });
         } catch (err) {
           console.error("[Pull] Parse error:", err.message, "| Raw:", data.substring(0, 300));
-          resolve(null);
+          resolve({ fetched: 0, inserted: 0, error: `Parse error: ${err.message} | Raw: ${data.substring(0, 200)}` });
         }
       });
     }).on("error", (err) => {
       console.error("[Pull] Request error:", err.message);
-      resolve(null);
+      resolve({ fetched: 0, inserted: 0, error: `Request error: ${err.message}` });
     });
   });
 }
@@ -441,13 +567,9 @@ async function fetchLeadsForDays(days) {
 
     console.log(`[Pull] Fetching day ${days - i + 1}/${days}: ${fmtIST(dayStart)} → ${fmtIST(dayEnd)}`);
     const result = await fetchLeadsFromAPI(dayStart, dayEnd);
-    if (result) {
-      totalFetched += result.fetched;
-      totalInserted += result.inserted;
-      results.push({ day: fmtIST(dayStart).split(" ")[0], ...result });
-    } else {
-      results.push({ day: fmtIST(dayStart).split(" ")[0], error: "failed" });
-    }
+    totalFetched += result.fetched || 0;
+    totalInserted += result.inserted || 0;
+    results.push({ day: fmtIST(dayStart).split(" ")[0], ...result });
   }
 
   return { totalFetched, totalInserted, days: results };
@@ -519,23 +641,49 @@ app.get("/", async (req, res) => {
     const tableRows = rows
       .map(
         (r) => {
-          // WhatsApp status badge
-          let waBadge = '<span class="wa-badge wa-pending">Pending</span>';
-          if (r.whatsapp_status === "sent") {
+          // WhatsApp status badge with details
+          let waBadge = "";
+          let waDetails = "";
+
+          if (r.whatsapp_status === "read") {
+            waBadge = '<span class="wa-badge wa-read">Read</span>';
+            if (r.whatsapp_sent_at) {
+              const d = new Date(r.whatsapp_sent_at);
+              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+              waDetails = `<br><small>${timeStr}</small>`;
+            }
+          } else if (r.whatsapp_status === "delivered") {
+            waBadge = '<span class="wa-badge wa-delivered">Delivered</span>';
+            if (r.whatsapp_sent_at) {
+              const d = new Date(r.whatsapp_sent_at);
+              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+              waDetails = `<br><small>${timeStr}</small>`;
+            }
+          } else if (r.whatsapp_status === "sent") {
             waBadge = '<span class="wa-badge wa-sent">Sent</span>';
+            if (r.whatsapp_sent_at) {
+              const d = new Date(r.whatsapp_sent_at);
+              const timeStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+              waDetails = `<br><small>${timeStr}</small>`;
+            }
           } else if (r.whatsapp_status === "failed") {
             waBadge = '<span class="wa-badge wa-failed">Failed</span>';
+            if (r.whatsapp_error) {
+              waDetails = `<br><small class="wa-error">${r.whatsapp_error}</small>`;
+            }
+          } else {
+            waBadge = '<span class="wa-badge wa-pending">—</span>';
           }
 
-          // WhatsApp sent time (readable format)
-          let waTime = "";
-          if (r.whatsapp_sent_at) {
-            const d = new Date(r.whatsapp_sent_at);
-            waTime = d.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+          // wa.me link — opens WhatsApp Web with pre-filled message
+          let waLink = "";
+          if (r.sender_mobile) {
+            const cleanNum = (r.sender_mobile || "").replace(/[\s+\-()]/g, "");
+            const waNum = cleanNum.startsWith("91") ? cleanNum : "91" + cleanNum;
+            const waText = r.whatsapp_message || ("You enquired for *" + (r.query_product_name || "our products") + "*, check our full catalog - https://sale91.com/catalog\n\nAsk if any question.");
+            const encoded = encodeURIComponent(waText);
+            waLink = '<br><a href="https://wa.me/' + waNum + '?text=' + encoded + '" target="_blank" class="wa-web-btn">Chat on WhatsApp</a>';
           }
-
-          // WhatsApp message preview (truncate)
-          const waMsg = r.whatsapp_message ? r.whatsapp_message.replace(/\n/g, " ").substring(0, 60) + (r.whatsapp_message.length > 60 ? "..." : "") : "";
 
           return `
       <tr>
@@ -547,7 +695,7 @@ app.get("/", async (req, res) => {
         <td>${r.query_product_name || ""}${r.query_mcat_name ? "<br><small>(" + r.query_mcat_name + ")</small>" : ""}</td>
         <td>${(r.query_message || "").substring(0, 80)}</td>
         <td>${r.query_time || ""}</td>
-        <td>${waBadge}${waTime ? "<br><small>" + waTime + "</small>" : ""}${waMsg ? '<br><small class="wa-msg">' + waMsg + "</small>" : ""}</td>
+        <td>${waBadge}${waDetails}${waLink}</td>
       </tr>`;
         }
       )
@@ -577,10 +725,15 @@ app.get("/", async (req, res) => {
     .failed-section table th { background: #dc2626; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
     .wa-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: white; }
-    .wa-sent { background: #16a34a; }
+    .wa-sent { background: #f59e0b; }
+    .wa-delivered { background: #16a34a; }
+    .wa-read { background: #2563eb; }
     .wa-failed { background: #dc2626; }
     .wa-pending { background: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
+    .wa-error { color: #dc2626; font-size: 11px; }
+    .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .wa-web-btn:hover { background: #1da851; }
   </style>
 </head>
 <body>
