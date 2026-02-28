@@ -323,13 +323,12 @@ function isValidIndianMobile(phone) {
 }
 
 // Derive product image URL from catalog page URL
-// sale91.com/catalog/p/oversize-210gsm/ → jpg via wsrv.nl (WhatsApp needs jpeg/png, not webp)
+// sale91.com/catalog/p/oversize-210gsm/ → bulkplaintshirt.com/catalog/images/oversize-210gsm/m.webp
 function getProductImage(catalogUrl) {
   if (!catalogUrl) return null;
   const match = catalogUrl.match(/\/catalog\/p\/([^/]+)/);
   if (!match) return null;
-  const webpUrl = `https://www.bulkplaintshirt.com/catalog/images/${match[1]}/m.webp`;
-  return `https://wsrv.nl/?url=${encodeURIComponent(webpUrl)}&output=jpg&q=85`;
+  return `https://www.bulkplaintshirt.com/catalog/images/${match[1]}/m.webp`;
 }
 
 // Pre-scrape URL on Facebook so OG image is cached before WhatsApp sends link preview
@@ -481,7 +480,6 @@ async function autoReplyToLead(lead) {
   const match = matchProduct(lead.QUERY_PRODUCT_NAME, lead.QUERY_MESSAGE);
 
   let msg;
-  let imageUrl = null;
   let linkUrl = null;
   if (!match) {
     console.log(`[WhatsApp] No product match for: "${lead.QUERY_PRODUCT_NAME}" / "${lead.QUERY_MESSAGE}" — sending generic catalog link`);
@@ -494,31 +492,18 @@ async function autoReplyToLead(lead) {
   } else {
     const template = cachedTemplates.product_reply || "You enquired for *{product_name}*, check price and photos - {url}\n\nAsk if any question.";
     linkUrl = match.url;
-    imageUrl = getProductImage(linkUrl);
     msg = template
       .replace(/{product_name}/g, match.name)
       .replace(/{url}/g, linkUrl)
       .replace(/{sender_name}/g, lead.SENDER_NAME || "");
   }
 
-  // Try sending as image message first (guaranteed image preview), fallback to text if image fails
-  let result = null;
-  if (imageUrl) {
-    console.log(`[WhatsApp] Sending image message: ${imageUrl}`);
-    result = await sendWhatsApp(phone, msg, imageUrl);
-    if (result && result.status === "failed") {
-      console.log(`[WhatsApp] Image message failed, falling back to text message`);
-      // Pre-scrape URL so OG image is cached for text link preview
-      await preScrapeUrl(linkUrl);
-      result = await sendWhatsApp(phone, msg, null);
-    }
-  } else {
-    // No image available — send text with link preview
-    if (linkUrl) {
-      await preScrapeUrl(linkUrl);
-    }
-    result = await sendWhatsApp(phone, msg, null);
+  // Pre-scrape the URL on Facebook so OG image is cached before sending
+  if (linkUrl) {
+    await preScrapeUrl(linkUrl);
   }
+
+  const result = await sendWhatsApp(phone, msg, null);
   const waStatus = result ? result.status : "failed";
   const waError = result && result.error ? result.error : null;
   const waWamid = result && result.wamid ? result.wamid : null;
