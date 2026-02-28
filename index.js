@@ -1112,6 +1112,40 @@ app.get("/api/debug-send", async (req, res) => {
   }
 });
 
+// Debug: Fetch template JSON from Meta Graph API
+// Usage: /debug/template?name=indiamart2&waba_id=YOUR_WABA_ID
+app.get("/debug/template", async (req, res) => {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const wabaId = req.query.waba_id || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  const templateName = req.query.name || "indiamart2";
+
+  if (!token) return res.json({ error: "WHATSAPP_ACCESS_TOKEN not set" });
+  if (!wabaId) return res.json({ error: "Pass ?waba_id=YOUR_WABA_ID or set WHATSAPP_BUSINESS_ACCOUNT_ID env var. Find it in Meta Business Manager → WhatsApp → Settings" });
+
+  try {
+    const result = await new Promise((resolve) => {
+      const r = https.request({
+        hostname: "graph.facebook.com",
+        path: `/v24.0/${wabaId}/message_templates?name=${encodeURIComponent(templateName)}`,
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }, (resp) => {
+        let data = "";
+        resp.on("data", (chunk) => (data += chunk));
+        resp.on("end", () => {
+          resolve({ http_status: resp.statusCode, body: (() => { try { return JSON.parse(data); } catch(e) { return data; } })() });
+        });
+      });
+      r.setTimeout(15000, () => { r.destroy(); resolve({ error: "Timeout 15s" }); });
+      r.on("error", (err) => resolve({ error: err.message }));
+      r.end();
+    });
+    res.json(result);
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // Debug: Test IndiaMART API raw response
 app.get("/debug/test-pull-api", (req, res) => {
   const crmKey = process.env.INDIAMART_CRM_KEY;
