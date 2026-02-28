@@ -794,16 +794,16 @@ app.get("/", async (req, res) => {
           let waDetails = "";
 
           if (r.whatsapp_status === "read") {
-            waBadge = '<span class="wa-badge wa-read">Read</span>';
+            waBadge = '<span class="wa-badge wa-read"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Read</span></span>';
             if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "delivered") {
-            waBadge = '<span class="wa-badge wa-delivered">Delivered</span>';
+            waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
             if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "sent") {
-            waBadge = '<span class="wa-badge wa-sent">Sent</span>';
+            waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
             if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else if (r.whatsapp_status === "failed") {
-            waBadge = '<span class="wa-badge wa-failed">Failed</span>';
+            waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
             if (r.whatsapp_error) {
               waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
             }
@@ -860,12 +860,16 @@ app.get("/", async (req, res) => {
     .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
     .failed-section table th { background: #dc2626; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
-    .wa-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: white; }
-    .wa-sent { background: #f59e0b; }
-    .wa-delivered { background: #16a34a; }
-    .wa-read { background: #2563eb; }
-    .wa-failed { background: #dc2626; }
-    .wa-pending { background: #9ca3af; }
+    .wa-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .wa-ticks { font-size: 16px; letter-spacing: -4px; margin-right: 2px; }
+    .wa-sent .wa-ticks { color: #9ca3af; }
+    .wa-sent .wa-label { color: #9ca3af; }
+    .wa-delivered .wa-ticks { color: #9ca3af; }
+    .wa-delivered .wa-label { color: #6b7280; }
+    .wa-read .wa-ticks { color: #53bdeb; }
+    .wa-read .wa-label { color: #53bdeb; }
+    .wa-failed { color: #dc2626; }
+    .wa-pending { color: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
     .wa-error { color: #dc2626; font-size: 11px; }
     .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
