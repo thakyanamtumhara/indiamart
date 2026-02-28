@@ -132,6 +132,7 @@ async function initDB() {
     "whatsapp_sent_at TIMESTAMP",
     "whatsapp_error TEXT",
     "whatsapp_wamid VARCHAR(255)",
+    "whatsapp_link TEXT",
   ];
   for (const col of newColumns) {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
@@ -582,8 +583,8 @@ async function autoReplyToLead(lead) {
   // Save WhatsApp delivery status, message text, sent time, wamid, and error in DB
   try {
     await pool.query(
-      "UPDATE leads SET whatsapp_status = $1, whatsapp_message = $2, whatsapp_sent_at = $3, whatsapp_error = $4, whatsapp_wamid = $5 WHERE unique_query_id = $6",
-      [waStatus, msg, waStatus === "sent" ? new Date().toISOString() : null, waError, waWamid, lead.UNIQUE_QUERY_ID]
+      "UPDATE leads SET whatsapp_status = $1, whatsapp_message = $2, whatsapp_sent_at = $3, whatsapp_error = $4, whatsapp_wamid = $5, whatsapp_link = $6 WHERE unique_query_id = $7",
+      [waStatus, msg, waStatus === "sent" ? new Date().toISOString() : null, waError, waWamid, linkUrl, lead.UNIQUE_QUERY_ID]
     );
   } catch (e) {
     console.error("[WhatsApp] Failed to update status in DB:", e.message);
@@ -1219,30 +1220,6 @@ app.get("/api/leads/month/:key", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Template CRUD API ───
-
-// Get all templates
-app.get("/api/templates", async (req, res) => {
-  try {
-    const { rows } = await pool.query("SELECT * FROM message_templates ORDER BY id");
-    res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Update a template
-app.post("/api/templates", async (req, res) => {
-  try {
-    const { template_key, template_text } = req.body;
-    if (!template_key || !template_text) return res.status(400).json({ error: "template_key and template_text required" });
-    await pool.query(
-      "UPDATE message_templates SET template_text = $1, updated_at = NOW() WHERE template_key = $2",
-      [template_text, template_key]
-    );
-    await loadTemplates();
-    res.json({ status: "ok" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // ─── Product Keywords CRUD API ───
 
 // Get all products with keywords
@@ -1358,28 +1335,24 @@ app.get("/", async (req, res) => {
     const tableRows = rows
       .map(
         (r) => {
-          // WhatsApp status badge with details
-          let waBadge = "";
-          let waDetails = "";
-
-          if (r.whatsapp_status === "read") {
-            waBadge = '<span class="wa-badge wa-read"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Read</span></span>';
-            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
-          } else if (r.whatsapp_status === "delivered") {
-            waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
-            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
-          } else if (r.whatsapp_status === "sent") {
-            waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
-            if (r.whatsapp_sent_at) waDetails = `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
-          } else if (r.whatsapp_status === "failed") {
-            waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
-            if (r.whatsapp_error) {
-              waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
-            }
+          // WhatsApp column: show link sent (or status for failed/called/pending)
+          let waCell = "";
+          if (r.whatsapp_status === "failed") {
+            waCell = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
+            if (r.whatsapp_error) waCell += `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
           } else if (r.whatsapp_status === "called") {
-            waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
+            waCell = '<span class="wa-badge wa-called">&#9742; Called</span>';
+          } else if (r.whatsapp_status && r.whatsapp_status !== "failed") {
+            // Show the link that was sent
+            const link = r.whatsapp_link || ((r.whatsapp_message || "").match(/https?:\/\/[^\s]+/) || [])[0] || "";
+            if (link) {
+              waCell = `<a href="${esc(link)}" target="_blank" class="wa-link">${esc(link)}</a>`;
+            } else {
+              waCell = '<span class="wa-badge wa-sent">Sent</span>';
+            }
+            if (r.whatsapp_sent_at) waCell += `<br><small>${toIST(r.whatsapp_sent_at)}</small>`;
           } else {
-            waBadge = '<span class="wa-badge wa-pending">—</span>';
+            waCell = '<span class="wa-badge wa-pending">—</span>';
           }
 
           // Follow-up link — open WhatsApp chat for manual follow-up
@@ -1389,9 +1362,6 @@ app.get("/", async (req, res) => {
             const waNum = cleanNum.startsWith("91") ? cleanNum : "91" + cleanNum;
             waLink = '<br><a href="https://wa.me/' + waNum + '" target="_blank" class="wa-web-btn">Follow Up</a>';
           }
-
-          // WhatsApp message sent (truncated for display)
-          const waMsg = r.whatsapp_message ? `<br><small class="wa-msg">${esc((r.whatsapp_message || "").substring(0, 100))}</small>` : "";
 
           // Lead type badge
           const typeMap = { B: ["Buy Lead", "lead-buy"], W: ["Web Lead", "lead-web"], C: ["Call Lead", "lead-call"] };
@@ -1408,7 +1378,7 @@ app.get("/", async (req, res) => {
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}${r.created_at ? '<br><small style="color:#16a34a">Received: ' + toIST(r.created_at) + '</small>' : ''}</td>
-        <td>${waBadge}${waDetails}${waMsg}${waLink}</td>
+        <td>${waCell}${waLink}</td>
       </tr>`;
         }
       )
@@ -1454,7 +1424,7 @@ app.get("/", async (req, res) => {
     .wa-failed { color: #dc2626; }
     .wa-called { color: #16a34a; font-weight: 700; }
     .wa-pending { color: #9ca3af; }
-    .wa-msg { color: #6b7280; font-style: italic; }
+    .wa-link { color: #2563eb; font-size: 12px; word-break: break-all; }
     .wa-error { color: #dc2626; font-size: 11px; }
     .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
     .wa-web-btn:hover { background: #1da851; }
@@ -1567,13 +1537,6 @@ app.get("/", async (req, res) => {
     <div class="month-leads-container" id="month-leads-container"></div>
   </div>
 
-  <!-- ─── MESSAGE TEMPLATES SECTION ─── -->
-  <div class="settings-section">
-    <h2>Message Templates</h2>
-    <p class="desc">WhatsApp message templates — placeholders: <code>{product_name}</code> <code>{url}</code> <code>{sender_name}</code></p>
-    <div id="templates-container">Loading...</div>
-  </div>
-
   <!-- ─── PRODUCT KEYWORDS SECTION ─── -->
   <div class="settings-section">
     <h2>Product Keywords</h2>
@@ -1651,13 +1614,18 @@ app.get("/", async (req, res) => {
           var tp = typeMap[r.query_type] || [r.query_type || '—', 'lead-other'];
           var typeBadge = '<span class="lead-type ' + tp[1] + '">' + tp[0] + '</span>';
 
-          var waBadge = '';
-          if (r.whatsapp_status === 'read') waBadge = '<span class="wa-badge wa-read"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Read</span></span>';
-          else if (r.whatsapp_status === 'delivered') waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
-          else if (r.whatsapp_status === 'sent') waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
-          else if (r.whatsapp_status === 'failed') waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
-          else if (r.whatsapp_status === 'called') waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
-          else waBadge = '<span class="wa-badge wa-pending">—</span>';
+          var waCell = '';
+          if (r.whatsapp_status === 'failed') {
+            waCell = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
+          } else if (r.whatsapp_status === 'called') {
+            waCell = '<span class="wa-badge wa-called">&#9742; Called</span>';
+          } else if (r.whatsapp_status) {
+            var link = r.whatsapp_link || ((r.whatsapp_message || '').match(/https?:\/\/[^\s]+/) || [])[0] || '';
+            if (link) waCell = '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(link) + '</a>';
+            else waCell = '<span class="wa-badge wa-sent">Sent</span>';
+          } else {
+            waCell = '<span class="wa-badge wa-pending">—</span>';
+          }
 
           var name = esc(r.sender_name);
           var mobile = esc(r.sender_mobile || '');
@@ -1668,7 +1636,7 @@ app.get("/", async (req, res) => {
           var timeFmt = function(d) { if (!d) return ''; return new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); };
           var timeCell = timeFmt(r.query_time) + (r.created_at ? '<br><small style="color:#16a34a">Received: ' + timeFmt(r.created_at) + '</small>' : '');
 
-          html += '<tr><td>' + name + '</td><td>' + mobile + '</td><td>' + company + '</td><td>' + city + '</td><td>' + typeBadge + '</td><td>' + product + '</td><td>' + msg + '</td><td>' + timeCell + '</td><td>' + waBadge + '</td></tr>';
+          html += '<tr><td>' + name + '</td><td>' + mobile + '</td><td>' + company + '</td><td>' + city + '</td><td>' + typeBadge + '</td><td>' + product + '</td><td>' + msg + '</td><td>' + timeCell + '</td><td>' + waCell + '</td></tr>';
         });
 
         html += '</tbody></table>';
@@ -1689,35 +1657,6 @@ app.get("/", async (req, res) => {
             showToast('Done! List se hata diya', true);
           } else { showToast('Error', false); }
         });
-    }
-
-    // ─── TEMPLATES ───
-    function loadTemplates() {
-      fetch('/api/templates').then(function(r) { return r.json(); }).then(function(data) {
-        var c = document.getElementById('templates-container');
-        c.innerHTML = '';
-        data.forEach(function(t) {
-          var div = document.createElement('div');
-          div.className = 'tmpl-card';
-          div.innerHTML = '<label>' + t.template_key + '</label>' +
-            '<div class="tmpl-desc">' + (t.description || '') + '</div>' +
-            '<textarea id="tmpl-' + t.template_key + '">' + t.template_text + '</textarea>' +
-            '<div class="placeholders">Placeholders: <code>{product_name}</code> <code>{url}</code> <code>{sender_name}</code></div>' +
-            '<br><button class="btn btn-primary btn-sm" onclick="saveTemplate(\\'' + t.template_key + '\\')">Save Template</button>';
-          c.appendChild(div);
-        });
-      });
-    }
-
-    function saveTemplate(key) {
-      var text = document.getElementById('tmpl-' + key).value;
-      fetch('/api/templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template_key: key, template_text: text })
-      }).then(function(r) { return r.json(); }).then(function(d) {
-        showToast(d.status === 'ok' ? 'Template saved!' : 'Error: ' + d.error, d.status === 'ok');
-      });
     }
 
     // ─── KEYWORDS ───
@@ -1816,7 +1755,6 @@ app.get("/", async (req, res) => {
 
     // Load on page ready
     loadMonths();
-    loadTemplates();
     loadKeywords();
   </script>
 </body>
