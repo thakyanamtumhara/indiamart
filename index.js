@@ -55,19 +55,49 @@ async function initDB() {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
   }
 
-  // Fix existing records with invalid phone numbers — mark them as "failed"
-  // This catches leads that were inserted before phone validation was added
+  // One-time migration: clean phone numbers that were stored with +/- formatting
   await pool.query(`
     UPDATE leads
-    SET whatsapp_status = 'failed',
-        whatsapp_error = 'Invalid number: ' || COALESCE(sender_mobile, 'none')
-    WHERE whatsapp_status = 'sent'
-    AND (
-      sender_mobile IS NULL
-      OR sender_mobile !~ '^(91)?[6-9][0-9]{9}$'
-      OR sender_mobile ~ '^(91)?(\\d)\\2{9}$'
-    )
+    SET sender_mobile = regexp_replace(sender_mobile, '[^0-9]', '', 'g')
+    WHERE sender_mobile ~ '[^0-9]'
   `);
+  // Add 91 prefix to bare 10-digit numbers
+  await pool.query(`
+    UPDATE leads
+    SET sender_mobile = '91' || sender_mobile
+    WHERE sender_mobile ~ '^[6-9][0-9]{9}$'
+  `);
+
+  // Reset leads that were wrongly marked as "failed" due to phone formatting
+  // These have valid cleaned numbers now, so retry them
+  await pool.query(`
+    UPDATE leads
+    SET whatsapp_status = NULL, whatsapp_error = NULL
+    WHERE whatsapp_status = 'failed'
+    AND whatsapp_error LIKE 'Invalid number:%'
+    AND sender_mobile ~ '^91[6-9][0-9]{9}$'
+  `);
+
+  // Retry leads that were wrongly marked as failed (now reset to NULL)
+  const pending = await pool.query(
+    `SELECT unique_query_id, sender_mobile, query_product_name, query_message, sender_name
+     FROM leads WHERE whatsapp_status IS NULL AND sender_mobile IS NOT NULL
+     LIMIT 50`
+  );
+  if (pending.rows.length > 0) {
+    console.log(`[Init] Retrying ${pending.rows.length} lead(s) with pending WhatsApp status...`);
+    for (const row of pending.rows) {
+      // Build a lead object matching autoReplyToLead expectations
+      const lead = {
+        UNIQUE_QUERY_ID: row.unique_query_id,
+        SENDER_MOBILE: row.sender_mobile,
+        QUERY_PRODUCT_NAME: row.query_product_name,
+        QUERY_MESSAGE: row.query_message,
+        SENDER_NAME: row.sender_name,
+      };
+      autoReplyToLead(lead).catch((e) => console.error(`[Init] Retry failed for ${row.unique_query_id}:`, e.message));
+    }
+  }
 
   console.log("Database initialized");
 }
@@ -93,7 +123,7 @@ async function insertLeads(leads) {
         l.QUERY_TYPE,
         l.QUERY_TIME || null,
         l.SENDER_NAME,
-        l.SENDER_MOBILE,
+        cleanPhoneNumber(l.SENDER_MOBILE),
         l.SENDER_EMAIL,
         l.SENDER_COMPANY,
         l.SENDER_ADDRESS,
@@ -103,7 +133,7 @@ async function insertLeads(leads) {
         l.QUERY_PRODUCT_NAME,
         l.QUERY_MESSAGE,
         l.CALL_DURATION,
-        l.SENDER_MOBILE_ALT || null,
+        cleanPhoneNumber(l.SENDER_MOBILE_ALT) || null,
         l.SENDER_EMAIL_ALT || null,
         l.SENDER_PINCODE || null,
         l.QUERY_MCAT_NAME || null,
@@ -156,6 +186,15 @@ function matchProduct(productName, message) {
     }
   }
   return null; // no match — send full catalog
+}
+
+// Clean phone number: remove +, -, spaces, parens → return "91XXXXXXXXXX"
+function cleanPhoneNumber(phone) {
+  if (!phone) return "";
+  const cleaned = phone.replace(/[\s+\-()]/g, "");
+  if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) return "91" + cleaned;
+  if (cleaned.startsWith("91") && cleaned.length === 12) return cleaned;
+  return cleaned; // return as-is if format unknown
 }
 
 // Validate Indian mobile number — must be 10 digits starting with 6-9
