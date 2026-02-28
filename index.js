@@ -493,18 +493,31 @@ async function autoReplyToLead(lead) {
   } else {
     const template = cachedTemplates.product_reply || "You enquired for *{product_name}*, check price and photos - {url}\n\nAsk if any question.";
     linkUrl = match.url;
+    imageUrl = getProductImage(linkUrl);
     msg = template
       .replace(/{product_name}/g, match.name)
       .replace(/{url}/g, linkUrl)
       .replace(/{sender_name}/g, lead.SENDER_NAME || "");
   }
 
-  // Pre-scrape the URL on Facebook so OG image is cached before sending
-  if (linkUrl) {
-    await preScrapeUrl(linkUrl);
+  // Try sending as image message first (guaranteed image preview), fallback to text if image fails
+  let result = null;
+  if (imageUrl) {
+    console.log(`[WhatsApp] Sending image message: ${imageUrl}`);
+    result = await sendWhatsApp(phone, msg, imageUrl);
+    if (result && result.status === "failed") {
+      console.log(`[WhatsApp] Image message failed, falling back to text message`);
+      // Pre-scrape URL so OG image is cached for text link preview
+      await preScrapeUrl(linkUrl);
+      result = await sendWhatsApp(phone, msg, null);
+    }
+  } else {
+    // No image available — send text with link preview
+    if (linkUrl) {
+      await preScrapeUrl(linkUrl);
+    }
+    result = await sendWhatsApp(phone, msg, null);
   }
-
-  const result = await sendWhatsApp(phone, msg, null);
   const waStatus = result ? result.status : "failed";
   const waError = result && result.error ? result.error : null;
   const waWamid = result && result.wamid ? result.wamid : null;
