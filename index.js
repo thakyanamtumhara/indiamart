@@ -1158,6 +1158,11 @@ app.get("/", async (req, res) => {
     .kw-tag { display: inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin: 1px 2px; }
     .kw-fallback { background: #fef3c7; color: #92400e; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
     .kw-url { color: #2563eb; font-size: 12px; }
+    .btn-edit { background: #f59e0b; color: white; }
+    .btn-edit:hover { background: #d97706; }
+    .edit-row td { background: #fffbeb; }
+    .edit-row input, .edit-row select { width: 100%; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; box-sizing: border-box; }
+    .edit-row .kw-edit-input { min-width: 150px; }
     .add-form { border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-top: 14px; display: none; }
     .add-form .form-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
     .add-form input, .add-form select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
@@ -1398,14 +1403,54 @@ app.get("/", async (req, res) => {
         data.forEach(function(p) {
           var kwTags = (p.keywords || []).map(function(k) { return '<span class="kw-tag">' + k + '</span>'; }).join(' ');
           var tr = document.createElement('tr');
+          tr.id = 'kw-row-' + p.id;
           tr.innerHTML = '<td>' + p.sort_order + '</td>' +
             '<td><strong>' + p.product_name + '</strong></td>' +
             '<td><span class="kw-url">sale91.com/catalog/p/' + p.url_slug + '/</span></td>' +
             '<td>' + kwTags + '</td>' +
             '<td>' + (p.is_fallback ? '<span class="kw-fallback">Fallback</span>' : 'Specific') + '</td>' +
-            '<td><button class="btn btn-danger btn-sm" onclick="deleteKeyword(' + p.id + ')">Delete</button></td>';
+            '<td>' +
+              '<button class="btn btn-edit btn-sm" onclick="editKeyword(' + p.id + ',' + JSON.stringify(JSON.stringify(p)) + ')">Edit</button> ' +
+              '<button class="btn btn-danger btn-sm" onclick="deleteKeyword(' + p.id + ')">Delete</button>' +
+            '</td>';
           tbody.appendChild(tr);
         });
+      });
+    }
+
+    function editKeyword(id, jsonStr) {
+      var p = JSON.parse(jsonStr);
+      var row = document.getElementById('kw-row-' + id);
+      if (!row) return;
+      var kwStr = (p.keywords || []).join(', ');
+      row.className = 'edit-row';
+      row.innerHTML = '<td><input type="number" id="edit-order-' + id + '" value="' + (p.sort_order || 100) + '" style="width:50px"></td>' +
+        '<td><input type="text" id="edit-name-' + id + '" value="' + (p.product_name || '') + '"></td>' +
+        '<td><input type="text" id="edit-slug-' + id + '" value="' + (p.url_slug || '') + '"></td>' +
+        '<td><input type="text" class="kw-edit-input" id="edit-kws-' + id + '" value="' + kwStr + '" placeholder="comma separated keywords"></td>' +
+        '<td><select id="edit-fb-' + id + '"><option value="false"' + (!p.is_fallback ? ' selected' : '') + '>Specific</option><option value="true"' + (p.is_fallback ? ' selected' : '') + '>Fallback</option></select></td>' +
+        '<td>' +
+          '<button class="btn btn-primary btn-sm" onclick="saveKeyword(' + id + ')">Save</button> ' +
+          '<button class="btn btn-sm" style="background:#e2e8f0" onclick="loadKeywords()">Cancel</button>' +
+        '</td>';
+    }
+
+    function saveKeyword(id) {
+      var name = document.getElementById('edit-name-' + id).value.trim();
+      var slug = document.getElementById('edit-slug-' + id).value.trim();
+      var kws = document.getElementById('edit-kws-' + id).value.trim();
+      var order = parseInt(document.getElementById('edit-order-' + id).value) || 100;
+      var fallback = document.getElementById('edit-fb-' + id).value === 'true';
+      if (!name || !slug) { showToast('Product name and slug required!', false); return; }
+      fetch('/api/keywords/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_name: name, url_slug: slug, keywords: kws.split(',').map(function(k){return k.trim();}).filter(Boolean), sort_order: order, is_fallback: fallback })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.status === 'ok') {
+          showToast('Updated!', true);
+          loadKeywords();
+        } else { showToast('Error: ' + d.error, false); }
       });
     }
 
