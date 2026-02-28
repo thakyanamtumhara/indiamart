@@ -465,13 +465,13 @@ app.post("/webhook/whatsapp", async (req, res) => {
   }
 });
 
-// Date formatter for IndiaMART API (IST timezone)
+// Date formatter for IndiaMART API (IST timezone, DD-MM-YYYY HH:MM:SS)
 function fmtIST(d) {
   // Convert to IST string (UTC+5:30)
   const ist = new Date(d.getTime() + (5.5 * 60 * 60 * 1000));
-  return ist.getUTCFullYear() + "-" +
+  return String(ist.getUTCDate()).padStart(2, "0") + "-" +
     String(ist.getUTCMonth() + 1).padStart(2, "0") + "-" +
-    String(ist.getUTCDate()).padStart(2, "0") + " " +
+    ist.getUTCFullYear() + " " +
     String(ist.getUTCHours()).padStart(2, "0") + ":" +
     String(ist.getUTCMinutes()).padStart(2, "0") + ":" +
     String(ist.getUTCSeconds()).padStart(2, "0");
