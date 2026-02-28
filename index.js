@@ -464,10 +464,11 @@ async function autoReplyToLead(lead) {
       .replace(/{product_name}/g, match.name)
       .replace(/{url}/g, match.url)
       .replace(/{sender_name}/g, lead.SENDER_NAME || "");
-    imageUrl = getProductImage(match.url);
+    // Image disabled — Meta silently drops image messages if it can't fetch the URL
+    // imageUrl = getProductImage(match.url);
   }
 
-  const result = await sendWhatsApp(phone, msg, imageUrl);
+  const result = await sendWhatsApp(phone, msg, null);
   const waStatus = result ? result.status : "failed";
   const waError = result && result.error ? result.error : null;
   const waWamid = result && result.wamid ? result.wamid : null;
