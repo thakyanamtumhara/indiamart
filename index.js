@@ -376,10 +376,27 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
   if (templateParams) {
     // Template message — works for all numbers (no 24-hour window needed)
     const components = [];
+    // Header image component (template has image header)
+    if (templateParams.headerImageUrl) {
+      components.push({
+        type: "header",
+        parameters: [{ type: "image", image: { link: templateParams.headerImageUrl } }],
+      });
+    }
+    // Body text parameters ({{1}} = product name)
     if (templateParams.bodyParams && templateParams.bodyParams.length > 0) {
       components.push({
         type: "body",
         parameters: templateParams.bodyParams.map((p) => ({ type: "text", text: p })),
+      });
+    }
+    // Button URL parameter ({{2}} = URL suffix after "https://")
+    if (templateParams.buttonUrlSuffix) {
+      components.push({
+        type: "button",
+        sub_type: "url",
+        index: 0,
+        parameters: [{ type: "text", text: templateParams.buttonUrlSuffix }],
       });
     }
     payload = {
@@ -392,7 +409,7 @@ function sendWhatsApp(phone, messageText, imageUrl, templateParams) {
         components,
       },
     };
-    console.log(`[WhatsApp] Sending template "${templateParams.name}" to ${cleanPhone} with params: ${JSON.stringify(templateParams.bodyParams)}`);
+    console.log(`[WhatsApp] Sending template "${templateParams.name}" to ${cleanPhone} with body: ${JSON.stringify(templateParams.bodyParams)}, button URL: ${templateParams.buttonUrlSuffix || "none"}`);
   } else if (imageUrl) {
     // Image message with caption — only works within 24-hour conversation window
     payload = {
@@ -539,15 +556,20 @@ async function autoReplyToLead(lead) {
   }
 
   // Use template message for business-initiated conversations (first contact)
-  // Template: indiamart_template with {{1}}=product name, {{2}}=URL
+  // Template: indiamart_template — {{1}}=product name (body), {{2}}=URL suffix (button)
   const templateName = process.env.WHATSAPP_TEMPLATE_NAME || "indiamart_template";
   const templateLang = process.env.WHATSAPP_TEMPLATE_LANG || "en";
   const productName = match ? match.name : (lead.QUERY_PRODUCT_NAME || "our products");
+  const headerImageUrl = process.env.WHATSAPP_HEADER_IMAGE_URL || "https://sale91.com/og-home.png";
+  // Button URL: template has "https://{{2}}", so send the part after "https://"
+  const buttonUrlSuffix = linkUrl.replace(/^https?:\/\//, "");
 
   const templateParams = {
     name: templateName,
     lang: templateLang,
-    bodyParams: [productName, linkUrl],
+    bodyParams: [productName],
+    buttonUrlSuffix,
+    headerImageUrl,
   };
 
   const result = await sendWhatsApp(phone, msg, null, templateParams);
