@@ -850,6 +850,40 @@ app.get("/api/leads", async (req, res) => {
   }
 });
 
+// ─── Monthly Leads API ───
+
+// Get monthly summary — count of leads per month
+app.get("/api/leads/months", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        TO_CHAR(created_at, 'YYYY-MM') AS month_key,
+        TO_CHAR(created_at, 'Mon YYYY') AS month_label,
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE whatsapp_status IN ('sent','delivered','read')) AS wa_success,
+        COUNT(*) FILTER (WHERE whatsapp_status = 'failed') AS wa_failed,
+        COUNT(*) FILTER (WHERE whatsapp_status = 'called') AS wa_called
+      FROM leads
+      GROUP BY month_key, month_label
+      ORDER BY month_key DESC
+    `);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get all leads for a specific month (YYYY-MM format)
+app.get("/api/leads/month/:key", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM leads
+       WHERE TO_CHAR(created_at, 'YYYY-MM') = $1
+       ORDER BY created_at DESC`,
+      [req.params.key]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── Template CRUD API ───
 
 // Get all templates
@@ -922,6 +956,17 @@ app.delete("/api/keywords/:id", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Mark a failed lead as "called" (done — remove from failed list)
+app.post("/api/lead/:id/called", async (req, res) => {
+  try {
+    await pool.query(
+      "UPDATE leads SET whatsapp_status = 'called' WHERE unique_query_id = $1",
+      [req.params.id]
+    );
+    res.json({ status: "ok" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Format any date/timestamp to IST for display on dashboard
 function toIST(dateVal) {
   if (!dateVal) return "";
@@ -943,6 +988,17 @@ app.get("/", async (req, res) => {
       "SELECT * FROM leads ORDER BY created_at DESC LIMIT 50"
     );
 
+    // Total leads count (all time)
+    const totalResult = await pool.query("SELECT COUNT(*) FROM leads");
+    const totalLeads = parseInt(totalResult.rows[0].count);
+
+    // Current month leads count
+    const monthResult = await pool.query(
+      "SELECT COUNT(*) FROM leads WHERE TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"
+    );
+    const currentMonthLeads = parseInt(monthResult.rows[0].count);
+    const currentMonthName = new Date().toLocaleString("en-IN", { month: "long", year: "numeric" });
+
     // Leads where WhatsApp failed — need to call directly
     const { rows: failedRows } = await pool.query(
       "SELECT * FROM leads WHERE whatsapp_status = 'failed' ORDER BY created_at DESC LIMIT 50"
@@ -951,7 +1007,7 @@ app.get("/", async (req, res) => {
     const failedTableRows = failedRows
       .map(
         (r) => `
-      <tr>
+      <tr id="failed-${esc(r.unique_query_id)}">
         <td>${esc(r.sender_name)}</td>
         <td><a href="tel:${esc(r.sender_mobile)}" class="call-btn">${esc(r.sender_mobile)}</a>${r.sender_mobile_alt ? '<br><a href="tel:' + esc(r.sender_mobile_alt) + '" class="call-btn alt">' + esc(r.sender_mobile_alt) + "</a>" : ""}</td>
         <td>${esc(r.sender_company)}</td>
@@ -959,6 +1015,7 @@ app.get("/", async (req, res) => {
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
         <td>${toIST(r.query_time)}</td>
+        <td><button class="btn btn-success btn-sm done-btn" onclick="markCalled('${esc(r.unique_query_id)}')">Done</button></td>
       </tr>`
       )
       .join("");
@@ -984,6 +1041,8 @@ app.get("/", async (req, res) => {
             if (r.whatsapp_error) {
               waDetails = `<br><small class="wa-error">${esc(r.whatsapp_error)}</small>`;
             }
+          } else if (r.whatsapp_status === "called") {
+            waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
           } else {
             waBadge = '<span class="wa-badge wa-pending">—</span>';
           }
@@ -1013,7 +1072,7 @@ app.get("/", async (req, res) => {
         <td>${typeBadge}</td>
         <td>${esc(r.query_product_name)}${r.query_mcat_name ? "<br><small>(" + esc(r.query_mcat_name) + ")</small>" : ""}</td>
         <td>${esc((r.query_message || "").substring(0, 80))}</td>
-        <td>${toIST(r.query_time)}</td>
+        <td>${toIST(r.query_time)}${r.created_at ? '<br><small style="color:#16a34a">Received: ' + toIST(r.created_at) + '</small>' : ''}</td>
         <td>${waBadge}${waDetails}${waMsg}${waLink}</td>
       </tr>`;
         }
@@ -1042,6 +1101,7 @@ app.get("/", async (req, res) => {
     .failed-section { margin-bottom: 30px; }
     .failed-section h2 { color: #dc2626; margin-bottom: 10px; }
     .failed-section table th { background: #dc2626; }
+    .done-btn { white-space: nowrap; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: white; background: #dc2626; margin-left: 8px; }
     .lead-type { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; white-space: nowrap; }
     .lead-buy { background: #dbeafe; color: #1d4ed8; }
@@ -1057,6 +1117,7 @@ app.get("/", async (req, res) => {
     .wa-read .wa-ticks { color: #53bdeb; }
     .wa-read .wa-label { color: #53bdeb; }
     .wa-failed { color: #dc2626; }
+    .wa-called { color: #16a34a; font-weight: 700; }
     .wa-pending { color: #9ca3af; }
     .wa-msg { color: #6b7280; font-style: italic; }
     .wa-error { color: #dc2626; font-size: 11px; }
@@ -1093,10 +1154,38 @@ app.get("/", async (req, res) => {
     .add-form input[type="text"] { flex: 1; min-width: 150px; }
     .add-form input[type="number"] { width: 80px; }
     .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 24px; background: #16a34a; color: white; border-radius: 8px; font-weight: 600; font-size: 14px; display: none; z-index: 1000; }
+
+    /* Monthly Archive */
+    .month-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+    .month-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 20px; cursor: pointer; min-width: 180px; transition: all 0.15s; background: white; }
+    .month-card:hover { border-color: #2563eb; box-shadow: 0 2px 8px rgba(37,99,235,0.12); }
+    .month-card.active { border-color: #2563eb; background: #eff6ff; }
+    .month-card .month-name { font-size: 16px; font-weight: 700; color: #1e293b; }
+    .month-card .month-total { font-size: 24px; font-weight: 800; color: #2563eb; margin: 4px 0; }
+    .month-card .month-stats { font-size: 11px; color: #64748b; }
+    .month-card .month-stats span { margin-right: 8px; }
+    .month-card .stat-ok { color: #16a34a; }
+    .month-card .stat-fail { color: #dc2626; }
+    .month-card .stat-call { color: #b45309; }
+    .month-leads-container { margin-top: 16px; }
+    .month-leads-container table th { background: #475569; }
   </style>
 </head>
 <body>
   <h1>IndiaMART Leads</h1>
+
+  <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;">
+    <div style="background:white;border-radius:10px;padding:16px 24px;box-shadow:0 1px 3px rgba(0,0,0,0.1);min-width:160px;">
+      <div style="font-size:12px;color:#64748b;font-weight:600;">TOTAL LEADS</div>
+      <div style="font-size:32px;font-weight:800;color:#2563eb;">${totalLeads}</div>
+      <div style="font-size:12px;color:#94a3b8;">All time</div>
+    </div>
+    <div style="background:white;border-radius:10px;padding:16px 24px;box-shadow:0 1px 3px rgba(0,0,0,0.1);min-width:160px;">
+      <div style="font-size:12px;color:#64748b;font-weight:600;">${currentMonthName.toUpperCase()}</div>
+      <div style="font-size:32px;font-weight:800;color:#16a34a;">${currentMonthLeads}</div>
+      <div style="font-size:12px;color:#94a3b8;">This month</div>
+    </div>
+  </div>
 
   ${failedRows.length > 0 ? `
   <div class="failed-section">
@@ -1106,7 +1195,7 @@ app.get("/", async (req, res) => {
       <thead>
         <tr>
           <th>Name</th><th>Phone (Tap to Call)</th><th>Company</th>
-          <th>City</th><th>Product</th><th>Message</th><th>Time</th>
+          <th>City</th><th>Product</th><th>Message</th><th>Time</th><th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -1121,7 +1210,7 @@ app.get("/", async (req, res) => {
     <thead>
       <tr>
         <th>Name</th><th>Mobile</th>
-        <th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Time</th><th>WhatsApp</th>
+        <th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Enquiry / Received</th><th>WhatsApp</th>
       </tr>
     </thead>
     <tbody>
@@ -1129,6 +1218,14 @@ app.get("/", async (req, res) => {
 
     </tbody>
   </table>
+
+  <!-- ─── MONTHLY ARCHIVE SECTION ─── -->
+  <div class="settings-section">
+    <h2>Monthly Archive</h2>
+    <p class="desc">Month pe click karo — uss month ki saari leads dikhegi</p>
+    <div class="month-grid" id="month-grid">Loading...</div>
+    <div class="month-leads-container" id="month-leads-container"></div>
+  </div>
 
   <!-- ─── MESSAGE TEMPLATES SECTION ─── -->
   <div class="settings-section">
@@ -1170,6 +1267,88 @@ app.get("/", async (req, res) => {
       t.style.background = ok ? '#16a34a' : '#dc2626';
       t.style.display = 'block';
       setTimeout(function() { t.style.display = 'none'; }, 2000);
+    }
+
+    // ─── MONTHLY ARCHIVE ───
+    function loadMonths() {
+      fetch('/api/leads/months').then(function(r) { return r.json(); }).then(function(data) {
+        var grid = document.getElementById('month-grid');
+        grid.innerHTML = '';
+        if (!data.length) { grid.innerHTML = '<p style="color:#94a3b8">No leads yet</p>'; return; }
+        data.forEach(function(m) {
+          var card = document.createElement('div');
+          card.className = 'month-card';
+          card.setAttribute('data-key', m.month_key);
+          card.innerHTML = '<div class="month-name">' + m.month_label + '</div>' +
+            '<div class="month-total">' + m.total + ' Leads</div>' +
+            '<div class="month-stats">' +
+              '<span class="stat-ok">WA: ' + m.wa_success + '</span>' +
+              '<span class="stat-fail">Failed: ' + m.wa_failed + '</span>' +
+              '<span class="stat-call">Called: ' + m.wa_called + '</span>' +
+            '</div>';
+          card.onclick = function() { loadMonthLeads(m.month_key, m.month_label); };
+          grid.appendChild(card);
+        });
+      });
+    }
+
+    function loadMonthLeads(key, label) {
+      // Highlight active card
+      var cards = document.querySelectorAll('.month-card');
+      cards.forEach(function(c) { c.className = c.getAttribute('data-key') === key ? 'month-card active' : 'month-card'; });
+
+      var container = document.getElementById('month-leads-container');
+      container.innerHTML = '<p style="color:#64748b;padding:12px;">Loading ' + label + ' leads...</p>';
+
+      fetch('/api/leads/month/' + key).then(function(r) { return r.json(); }).then(function(rows) {
+        if (!rows.length) { container.innerHTML = '<p style="color:#94a3b8;padding:12px;">No leads in ' + label + '</p>'; return; }
+
+        var html = '<h3 style="margin:16px 0 8px;color:#1e293b;">' + label + ' — ' + rows.length + ' Leads</h3>';
+        html += '<table><thead><tr><th>Name</th><th>Mobile</th><th>Company</th><th>City</th><th>Type</th><th>Product</th><th>Message</th><th>Enquiry / Received</th><th>WhatsApp</th></tr></thead><tbody>';
+
+        rows.forEach(function(r) {
+          var typeMap = { B: ['Buy Lead','lead-buy'], W: ['Web Lead','lead-web'], C: ['Call Lead','lead-call'] };
+          var tp = typeMap[r.query_type] || [r.query_type || '—', 'lead-other'];
+          var typeBadge = '<span class="lead-type ' + tp[1] + '">' + tp[0] + '</span>';
+
+          var waBadge = '';
+          if (r.whatsapp_status === 'read') waBadge = '<span class="wa-badge wa-read"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Read</span></span>';
+          else if (r.whatsapp_status === 'delivered') waBadge = '<span class="wa-badge wa-delivered"><span class="wa-ticks">&#10003;&#10003;</span><span class="wa-label">Delivered</span></span>';
+          else if (r.whatsapp_status === 'sent') waBadge = '<span class="wa-badge wa-sent"><span class="wa-ticks">&#10003;</span><span class="wa-label">Sent</span></span>';
+          else if (r.whatsapp_status === 'failed') waBadge = '<span class="wa-badge wa-failed">&#10007; Failed</span>';
+          else if (r.whatsapp_status === 'called') waBadge = '<span class="wa-badge wa-called">&#9742; Called</span>';
+          else waBadge = '<span class="wa-badge wa-pending">—</span>';
+
+          var name = esc(r.sender_name);
+          var mobile = esc(r.sender_mobile || '');
+          var company = esc(r.sender_company || '');
+          var city = esc(r.sender_city || '');
+          var product = esc(r.query_product_name || '');
+          var msg = esc((r.query_message || '').substring(0, 80));
+          var timeFmt = function(d) { if (!d) return ''; return new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); };
+          var timeCell = timeFmt(r.query_time) + (r.created_at ? '<br><small style="color:#16a34a">Received: ' + timeFmt(r.created_at) + '</small>' : '');
+
+          html += '<tr><td>' + name + '</td><td>' + mobile + '</td><td>' + company + '</td><td>' + city + '</td><td>' + typeBadge + '</td><td>' + product + '</td><td>' + msg + '</td><td>' + timeCell + '</td><td>' + waBadge + '</td></tr>';
+        });
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      });
+    }
+
+    function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    // ─── MARK CALLED (Done) ───
+    function markCalled(queryId) {
+      fetch('/api/lead/' + queryId + '/called', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.status === 'ok') {
+            var row = document.getElementById('failed-' + queryId);
+            if (row) row.style.display = 'none';
+            showToast('Done! List se hata diya', true);
+          } else { showToast('Error', false); }
+        });
     }
 
     // ─── TEMPLATES ───
@@ -1256,6 +1435,7 @@ app.get("/", async (req, res) => {
     }
 
     // Load on page ready
+    loadMonths();
     loadTemplates();
     loadKeywords();
   </script>
