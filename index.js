@@ -188,18 +188,8 @@ async function initDB() {
      LIMIT 50`
   );
   if (pending.rows.length > 0) {
-    console.log(`[Init] Retrying ${pending.rows.length} lead(s) with pending WhatsApp status...`);
-    for (const row of pending.rows) {
-      // Build a lead object matching autoReplyToLead expectations
-      const lead = {
-        UNIQUE_QUERY_ID: row.unique_query_id,
-        SENDER_MOBILE: row.sender_mobile,
-        QUERY_PRODUCT_NAME: row.query_product_name,
-        QUERY_MESSAGE: row.query_message,
-        SENDER_NAME: row.sender_name,
-      };
-      autoReplyToLead(lead).catch((e) => console.error(`[Init] Retry failed for ${row.unique_query_id}:`, e.message));
-    }
+    console.log(`[Init] Found ${pending.rows.length} lead(s) with pending WhatsApp status — auto-reply disabled, skipping`);
+    // WhatsApp auto-reply disabled — messages are now sent from a separate app
   }
 
   console.log("Database initialized");
@@ -700,12 +690,7 @@ app.post("/webhook/indiamart", async (req, res) => {
 
     const inserted = await insertLeads(leads);
 
-    // Auto-reply via WhatsApp for new leads (don't block response)
-    if (inserted > 0) {
-      for (const l of leads) {
-        autoReplyToLead(l).catch((e) => console.error("[WhatsApp] Auto-reply failed:", e.message));
-      }
-    }
+    // WhatsApp auto-reply disabled — messages are now sent from a separate app
 
     console.log(`[Push] ${timestamp} — Received ${leads.length} lead(s), inserted ${inserted}`);
     res.status(200).json({ status: "ok", received: leads.length, inserted });
@@ -930,12 +915,7 @@ function fetchLeadsFromAPI(startTime, endTime) {
 
           const inserted = await insertLeads(leads);
 
-          // Auto-reply via WhatsApp for newly inserted leads
-          if (inserted > 0) {
-            for (const l of leads) {
-              autoReplyToLead(l).catch((e) => console.error("[WhatsApp] Auto-reply failed:", e.message));
-            }
-          }
+          // WhatsApp auto-reply disabled — messages are now sent from a separate app
 
           console.log(`[Pull] Fetched ${leads.length} lead(s), inserted ${inserted}`);
           resolve({ fetched: leads.length, inserted });
@@ -1024,8 +1004,7 @@ app.get("/api/test-lead", async (req, res) => {
     // Insert into DB
     await insertLeads([lead]);
 
-    // Send WhatsApp (wait for result, don't fire-and-forget)
-    const waResult = await autoReplyToLead(lead);
+    // WhatsApp auto-reply disabled — messages are now sent from a separate app
 
     // Fetch the result from DB
     const { rows } = await pool.query(
