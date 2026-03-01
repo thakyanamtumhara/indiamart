@@ -1423,14 +1423,8 @@ app.get("/", async (req, res) => {
               const shortLink = link.replace("https://sale91.com/catalog/", ".../");
               waCell = `<div class="wa-link-cell" id="wa-cell-${esc(r.unique_query_id)}">
                 <a href="${esc(link)}" target="_blank" class="wa-link">${esc(shortLink)}</a>
-                <button class="btn-correct" onclick="showCorrectDropdown('${esc(r.unique_query_id)}')" title="Link galat hai? Correct karo">&#9998;</button>
+                <button type="button" class="btn-correct" onclick="openFixModal('${esc(r.unique_query_id)}', '${esc((r.query_product_name || "").replace(/'/g, ""))}')" title="Link galat hai? Correct karo">&#9998;</button>
                 ${r.corrected_product_id ? '<span class="wa-corrected">Corrected</span>' : ''}
-                <div class="correct-dropdown" id="correct-${esc(r.unique_query_id)}" style="display:none">
-                  <select onchange="correctLink('${esc(r.unique_query_id)}', this.value)">
-                    <option value="">-- Sahi product chuno --</option>
-                    ${productOptions}
-                  </select>
-                </div>
               </div>`;
             } else {
               waCell = '<span class="wa-badge wa-sent">Sent</span>';
@@ -1513,11 +1507,9 @@ app.get("/", async (req, res) => {
     .wa-error { color: #dc2626; font-size: 11px; }
     .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
     .wa-web-btn:hover { background: #1da851; }
-    .wa-link-cell { position: relative; }
+    .wa-link-cell { display: inline; }
     .btn-correct { background: none; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-size: 14px; padding: 2px 6px; margin-left: 4px; color: #64748b; vertical-align: middle; }
     .btn-correct:hover { background: #f1f5f9; color: #2563eb; border-color: #2563eb; }
-    .correct-dropdown { margin-top: 4px; }
-    .correct-dropdown select { width: 100%; padding: 4px 6px; border: 1px solid #2563eb; border-radius: 4px; font-size: 12px; background: #eff6ff; }
     .wa-corrected { display: inline-block; background: #dcfce7; color: #15803d; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; font-weight: 600; }
 
     /* Settings sections */
@@ -1652,6 +1644,22 @@ app.get("/", async (req, res) => {
     </table>
   </div>
 
+  <!-- Fix Link Modal -->
+  <div id="fix-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center;">
+    <div style="background:white; border-radius:12px; padding:24px; max-width:400px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 8px; font-size:16px; color:#1e293b;">Sahi Product Select Karo</h3>
+      <p style="margin:0 0 16px; font-size:13px; color:#64748b;">Lead: <strong id="fix-lead-name"></strong></p>
+      <select id="fix-product-select" style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:8px; font-size:14px; margin-bottom:16px;">
+        <option value="">-- Product chuno --</option>
+        ${productOptions}
+      </select>
+      <div style="display:flex; gap:8px;">
+        <button type="button" onclick="submitFix()" style="flex:1; padding:10px; background:#2563eb; color:white; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;">Save</button>
+        <button type="button" onclick="closeFixModal()" style="flex:1; padding:10px; background:#e2e8f0; color:#334155; border:none; border-radius:8px; font-size:14px; cursor:pointer;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -1717,19 +1725,12 @@ app.get("/", async (req, res) => {
             if (link) {
               var shortLink = link.replace('https://sale91.com/catalog/', '.../');
               var qid = esc(r.unique_query_id);
-              var opts = '';
-              Object.keys(kwDataMap).forEach(function(kid) {
-                var kp = kwDataMap[kid];
-                opts += '<option value="' + kp.id + '">' + esc(kp.product_name) + (kp.is_fallback ? ' (fallback)' : '') + '</option>';
-              });
+              var pname = esc((r.query_product_name || '').replace(/'/g, ''));
               waCell = '<div class="wa-link-cell" id="wa-cell-' + qid + '">'
                 + '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(shortLink) + '</a>'
-                + '<button class="btn-correct" onclick="showCorrectDropdown(\'' + qid + '\')" title="Fix link">&#9998;</button>'
+                + '<button type="button" class="btn-correct" onclick="openFixModal(\'' + qid + '\', \'' + pname + '\')" title="Fix link">&#9998;</button>'
                 + (r.corrected_product_id ? '<span class="wa-corrected">Corrected</span>' : '')
-                + '<div class="correct-dropdown" id="correct-' + qid + '" style="display:none">'
-                + '<select onchange="correctLink(\'' + qid + '\', this.value)">'
-                + '<option value="">-- Sahi product chuno --</option>' + opts
-                + '</select></div></div>';
+                + '</div>';
             }
             else waCell = '<span class="wa-badge wa-sent">Sent</span>';
           } else {
@@ -1755,15 +1756,28 @@ app.get("/", async (req, res) => {
 
     function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-    // ─── FIX LINK (Correct product) ───
-    function showCorrectDropdown(queryId) {
-      var el = document.getElementById('correct-' + queryId);
-      if (!el) return;
-      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    // ─── FIX LINK (Modal approach) ───
+    var fixQueryId = null;
+
+    function openFixModal(queryId, productName) {
+      fixQueryId = queryId;
+      document.getElementById('fix-lead-name').textContent = productName || '—';
+      document.getElementById('fix-product-select').value = '';
+      var modal = document.getElementById('fix-modal');
+      modal.style.display = 'flex';
     }
 
-    function correctLink(queryId, productId) {
-      if (!productId) return;
+    function closeFixModal() {
+      document.getElementById('fix-modal').style.display = 'none';
+      fixQueryId = null;
+    }
+
+    function submitFix() {
+      var productId = document.getElementById('fix-product-select').value;
+      if (!productId) { showToast('Pehle product select karo!', false); return; }
+      if (!fixQueryId) return;
+      var queryId = fixQueryId;
+
       fetch('/api/lead/' + queryId + '/correct-link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1775,13 +1789,12 @@ app.get("/", async (req, res) => {
           var msg = 'Link updated: ' + d.product_name;
           if (d.keyword_added) msg += ' | Keyword seekh liya: "' + d.keyword_added + '"';
           showToast(msg, true);
+          closeFixModal();
           // Update the link in the cell
           var cell = document.getElementById('wa-cell-' + queryId);
           if (cell) {
             var a = cell.querySelector('.wa-link');
             if (a) { a.href = d.new_link; a.textContent = d.new_link.replace('https://sale91.com/catalog/', '.../'); }
-            var dd = document.getElementById('correct-' + queryId);
-            if (dd) dd.style.display = 'none';
             if (!cell.querySelector('.wa-corrected')) {
               var badge = document.createElement('span');
               badge.className = 'wa-corrected';
@@ -1789,7 +1802,6 @@ app.get("/", async (req, res) => {
               cell.appendChild(badge);
             }
           }
-          // Refresh keywords table since a new keyword may have been added
           if (d.keyword_added) loadKeywords();
         } else { showToast('Error: ' + (d.error || 'Unknown'), false); }
       })
