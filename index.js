@@ -133,6 +133,7 @@ async function initDB() {
     "whatsapp_error TEXT",
     "whatsapp_wamid VARCHAR(255)",
     "whatsapp_link TEXT",
+    "corrected_product_id INT",
   ];
   for (const col of newColumns) {
     await pool.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS ${col}`);
@@ -1300,6 +1301,53 @@ app.post("/api/lead/:id/called", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Correct a lead's WhatsApp link and learn from it (add keyword to product)
+app.post("/api/lead/:id/correct-link", async (req, res) => {
+  try {
+    const { product_id } = req.body;
+    if (!product_id) return res.status(400).json({ error: "product_id required" });
+
+    // 1. Get the correct product
+    const prodResult = await pool.query("SELECT * FROM product_keywords WHERE id = $1", [product_id]);
+    if (prodResult.rows.length === 0) return res.status(404).json({ error: "Product not found" });
+    const product = prodResult.rows[0];
+    const newLink = `${CATALOG_BASE}/${product.url_slug}/`;
+
+    // 2. Get the lead (need query_product_name for learning)
+    const leadResult = await pool.query(
+      "SELECT query_product_name FROM leads WHERE unique_query_id = $1",
+      [req.params.id]
+    );
+    if (leadResult.rows.length === 0) return res.status(404).json({ error: "Lead not found" });
+    const lead = leadResult.rows[0];
+
+    // 3. Update the lead's link and mark as corrected
+    await pool.query(
+      "UPDATE leads SET whatsapp_link = $1, corrected_product_id = $2 WHERE unique_query_id = $3",
+      [newLink, product_id, req.params.id]
+    );
+
+    // 4. Learning: add query_product_name as keyword if not already present
+    let keywordAdded = null;
+    const queryName = (lead.query_product_name || "").toLowerCase().trim();
+    if (queryName) {
+      const existingKws = (product.keywords || []).map(k => k.toLowerCase());
+      if (!existingKws.includes(queryName)) {
+        await pool.query(
+          "UPDATE product_keywords SET keywords = array_append(keywords, $1), updated_at = NOW() WHERE id = $2",
+          [queryName, product_id]
+        );
+        keywordAdded = queryName;
+      }
+    }
+
+    // 5. Refresh in-memory cache
+    await loadProducts();
+
+    res.json({ status: "ok", new_link: newLink, product_name: product.product_name, keyword_added: keywordAdded });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Format any date/timestamp to IST for display on dashboard
 function toIST(dateVal) {
   if (!dateVal) return "";
@@ -1353,6 +1401,11 @@ app.get("/", async (req, res) => {
       )
       .join("");
 
+    // Build product options HTML for the "Fix Link" dropdown
+    const productOptions = cachedProducts
+      .map(p => `<option value="${p.id}">${esc(p.product_name)}${p.is_fallback ? " (fallback)" : ""}</option>`)
+      .join("");
+
     const tableRows = rows
       .map(
         (r) => {
@@ -1367,7 +1420,18 @@ app.get("/", async (req, res) => {
             // Show the link that was sent
             const link = r.whatsapp_link || ((r.whatsapp_message || "").match(/https?:\/\/[^\s]+/) || [])[0] || "";
             if (link) {
-              waCell = `<a href="${esc(link)}" target="_blank" class="wa-link">${esc(link)}</a>`;
+              const shortLink = link.replace("https://sale91.com/catalog/", ".../");
+              waCell = `<div class="wa-link-cell" id="wa-cell-${esc(r.unique_query_id)}">
+                <a href="${esc(link)}" target="_blank" class="wa-link">${esc(shortLink)}</a>
+                <button class="btn-correct" onclick="showCorrectDropdown('${esc(r.unique_query_id)}')" title="Link galat hai? Correct karo">&#9998;</button>
+                ${r.corrected_product_id ? '<span class="wa-corrected">Corrected</span>' : ''}
+                <div class="correct-dropdown" id="correct-${esc(r.unique_query_id)}" style="display:none">
+                  <select onchange="correctLink('${esc(r.unique_query_id)}', this.value)">
+                    <option value="">-- Sahi product chuno --</option>
+                    ${productOptions}
+                  </select>
+                </div>
+              </div>`;
             } else {
               waCell = '<span class="wa-badge wa-sent">Sent</span>';
             }
@@ -1449,6 +1513,12 @@ app.get("/", async (req, res) => {
     .wa-error { color: #dc2626; font-size: 11px; }
     .wa-web-btn { display: inline-block; margin-top: 4px; padding: 3px 10px; background: #25D366; color: white; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: 600; }
     .wa-web-btn:hover { background: #1da851; }
+    .wa-link-cell { position: relative; }
+    .btn-correct { background: none; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-size: 14px; padding: 2px 6px; margin-left: 4px; color: #64748b; vertical-align: middle; }
+    .btn-correct:hover { background: #f1f5f9; color: #2563eb; border-color: #2563eb; }
+    .correct-dropdown { margin-top: 4px; }
+    .correct-dropdown select { width: 100%; padding: 4px 6px; border: 1px solid #2563eb; border-radius: 4px; font-size: 12px; background: #eff6ff; }
+    .wa-corrected { display: inline-block; background: #dcfce7; color: #15803d; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; font-weight: 600; }
 
     /* Settings sections */
     .settings-section { margin-top: 40px; padding: 24px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -1644,7 +1714,23 @@ app.get("/", async (req, res) => {
             waCell = '<span class="wa-badge wa-called">&#9742; Called</span>';
           } else if (r.whatsapp_status) {
             var link = r.whatsapp_link || ((r.whatsapp_message || '').match(/https?:\\/\\/[^\\s]+/) || [])[0] || '';
-            if (link) waCell = '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(link) + '</a>';
+            if (link) {
+              var shortLink = link.replace('https://sale91.com/catalog/', '.../');
+              var qid = esc(r.unique_query_id);
+              var opts = '';
+              Object.keys(kwDataMap).forEach(function(kid) {
+                var kp = kwDataMap[kid];
+                opts += '<option value="' + kp.id + '">' + esc(kp.product_name) + (kp.is_fallback ? ' (fallback)' : '') + '</option>';
+              });
+              waCell = '<div class="wa-link-cell" id="wa-cell-' + qid + '">'
+                + '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(shortLink) + '</a>'
+                + '<button class="btn-correct" onclick="showCorrectDropdown(\'' + qid + '\')" title="Fix link">&#9998;</button>'
+                + (r.corrected_product_id ? '<span class="wa-corrected">Corrected</span>' : '')
+                + '<div class="correct-dropdown" id="correct-' + qid + '" style="display:none">'
+                + '<select onchange="correctLink(\'' + qid + '\', this.value)">'
+                + '<option value="">-- Sahi product chuno --</option>' + opts
+                + '</select></div></div>';
+            }
             else waCell = '<span class="wa-badge wa-sent">Sent</span>';
           } else {
             waCell = '<span class="wa-badge wa-pending">—</span>';
@@ -1668,6 +1754,47 @@ app.get("/", async (req, res) => {
     }
 
     function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    // ─── FIX LINK (Correct product) ───
+    function showCorrectDropdown(queryId) {
+      var el = document.getElementById('correct-' + queryId);
+      if (!el) return;
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function correctLink(queryId, productId) {
+      if (!productId) return;
+      fetch('/api/lead/' + queryId + '/correct-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_id: parseInt(productId) })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.status === 'ok') {
+          var msg = 'Link updated: ' + d.product_name;
+          if (d.keyword_added) msg += ' | Keyword seekh liya: "' + d.keyword_added + '"';
+          showToast(msg, true);
+          // Update the link in the cell
+          var cell = document.getElementById('wa-cell-' + queryId);
+          if (cell) {
+            var a = cell.querySelector('.wa-link');
+            if (a) { a.href = d.new_link; a.textContent = d.new_link.replace('https://sale91.com/catalog/', '.../'); }
+            var dd = document.getElementById('correct-' + queryId);
+            if (dd) dd.style.display = 'none';
+            if (!cell.querySelector('.wa-corrected')) {
+              var badge = document.createElement('span');
+              badge.className = 'wa-corrected';
+              badge.textContent = 'Corrected';
+              cell.appendChild(badge);
+            }
+          }
+          // Refresh keywords table since a new keyword may have been added
+          if (d.keyword_added) loadKeywords();
+        } else { showToast('Error: ' + (d.error || 'Unknown'), false); }
+      })
+      .catch(function(e) { showToast('Network error', false); });
+    }
 
     // ─── MARK CALLED (Done) ───
     function markCalled(queryId) {
