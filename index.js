@@ -1728,7 +1728,7 @@ app.get("/", async (req, res) => {
               var pname = esc((r.query_product_name || '').replace(/'/g, ''));
               waCell = '<div class="wa-link-cell" id="wa-cell-' + qid + '">'
                 + '<a href="' + esc(link) + '" target="_blank" class="wa-link">' + esc(shortLink) + '</a>'
-                + '<button type="button" class="btn-correct" onclick="openFixModal(\'' + qid + '\', \'' + pname + '\')" title="Fix link">&#9998;</button>'
+                + '<button type="button" class="btn-correct" onclick="openFixModal(\\'' + qid + '\\', \\'' + pname + '\\')" title="Fix link">&#9998;</button>'
                 + (r.corrected_product_id ? '<span class="wa-corrected">Corrected</span>' : '')
                 + '</div>';
             }
